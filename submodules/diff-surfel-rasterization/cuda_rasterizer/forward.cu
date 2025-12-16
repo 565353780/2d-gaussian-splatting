@@ -118,30 +118,29 @@ __device__ void compute_transmat(
 // The center of the bounding box is used to create a low pass filter
 __device__ bool compute_aabb(
 	glm::mat3 T, 
+	float cutoff,
 	float2& point_image,
-	float2 & extent
+	float2& extent
 ) {
-	float3 T0 = {T[0][0], T[0][1], T[0][2]};
-	float3 T1 = {T[1][0], T[1][1], T[1][2]};
-	float3 T3 = {T[2][0], T[2][1], T[2][2]};
+	glm::vec3 t = glm::vec3(cutoff * cutoff, cutoff * cutoff, -1.0f);
+	float d = glm::dot(t, T[2] * T[2]);
+	if (d == 0.0) return false;
+	glm::vec3 f = (1 / d) * t;
 
-	// Compute AABB
-	float3 temp_point = {1.0f, 1.0f, -1.0f};
-	float distance = sumf3(T3 * T3 * temp_point);
-	float3 f = (1 / distance) * temp_point;
-	if (distance == 0.0) return false;
+	glm::vec2 p = glm::vec2(
+		glm::dot(f, T[0] * T[2]),
+		glm::dot(f, T[1] * T[2])
+	);
 
-	point_image = {
-		sumf3(f * T0 * T3),
-		sumf3(f * T1 * T3)
-	};  
-	
-	float2 temp = {
-		sumf3(f * T0 * T0),
-		sumf3(f * T1 * T1)
-	};
-	float2 half_extend = point_image * point_image - temp;
-	extent = sqrtf2(maxf2(1e-4, half_extend));
+	glm::vec2 h0 = p * p - 
+		glm::vec2(
+			glm::dot(f, T[0] * T[0]),
+			glm::dot(f, T[1] * T[1])
+		);
+
+	glm::vec2 h = sqrt(max(glm::vec2(1e-4, 1e-4), h0));
+	point_image = {p.x, p.y};
+	extent = {h.x, h.y};
 	return true;
 }
 
@@ -214,14 +213,21 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	normal = multiplier * normal;
 #endif
 
+#if TIGHTBBOX // no use in the paper, but it indeed help speeds.
+	// the effective extent is now depended on the opacity of gaussian.
+	float cutoff = sqrtf(max(9.f + 2.f * logf(opacities[idx]), 0.000001));
+#else
+	float cutoff = 3.0f;
+#endif
+
 	// Compute center and radius
 	float2 point_image;
 	float radius;
 	{
 		float2 extent;
-		bool ok = compute_aabb(T, point_image, extent);
+		bool ok = compute_aabb(T, cutoff, point_image, extent);
 		if (!ok) return;
-		radius = ceil(3.0f * max(extent.x, extent.y));
+		radius = ceil(max(max(extent.x, extent.y), cutoff * FilterSize));
 	}
 
 	uint2 rect_min, rect_max;
@@ -345,19 +351,26 @@ renderCUDA(
 			const float3 Tu = collected_Tu[j];
 			const float3 Tv = collected_Tv[j];
 			const float3 Tw = collected_Tw[j];
+			// Transform the two planes into local u-v system. 
 			float3 k = pix.x * Tw - Tu;
 			float3 l = pix.y * Tw - Tv;
+			// Cross product of two planes is a line, Eq. (9)
 			float3 p = cross(k, l);
 			if (p.z == 0.0) continue;
+			// Perspective division to get the intersection (u,v), Eq. (10)
 			float2 s = {p.x / p.z, p.y / p.z};
 			float rho3d = (s.x * s.x + s.y * s.y); 
+			// Add low pass filter
 			float2 d = {xy.x - pixf.x, xy.y - pixf.y};
 			float rho2d = FilterInvSquare * (d.x * d.x + d.y * d.y); 
-
-			// compute intersection and depth
 			float rho = min(rho3d, rho2d);
-			float depth = (rho3d <= rho2d) ? (s.x * Tw.x + s.y * Tw.y) + Tw.z : Tw.z; 
+
+			// compute depth
+			float depth = (s.x * Tw.x + s.y * Tw.y) + Tw.z;
+			// if a point is too small, its depth is not reliable?
+			// depth = (rho3d <= rho2d) ? depth : Tw.z 
 			if (depth < near_n) continue;
+
 			float4 nor_o = collected_normal_opacity[j];
 			float normal[3] = {nor_o.x, nor_o.y, nor_o.z};
 			float opa = nor_o.w;
