@@ -1,11 +1,12 @@
-pip install -U torch torchvision torchaudio
+pip3 install torch torchvision \
+  --index-url https://download.pytorch.org/whl/cu124
 
-pip install -U ffmpeg pillow open3d mediapy lpips \
+pip install ffmpeg pillow open3d mediapy lpips \
   scikit-image tqdm trimesh plyfile opencv-python \
-  tensorboard
+  tensorboard ninja
 
 cd ./submodules/diff-surfel-rasterization
-pip install -e .
+python setup.py install
 
 cd ../simple-knn
-pip install -e .
+python setup.py install

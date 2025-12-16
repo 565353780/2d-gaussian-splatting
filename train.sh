@@ -1,4 +1,4 @@
 python train.py \
-	-s /home/chli/Dataset/NeRF/hotdog_train \
-	--images dense/images \
-	--port 6009
+  -s /home/lichanghao/chLi/Dataset/GS/haizei_1/gs/ \
+  --images dense/images \
+  --port 6009
