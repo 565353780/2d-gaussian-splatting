@@ -1,6 +1,6 @@
 python view.py \
-	-s /home/chli/Dataset/NeRF/hotdog_train \
-	--images dense/images \
-	-m ./output/2b2ac66a-9 \
-	--port 6009 \
-	--iteration 30000
+  -s /home/lichanghao/chLi/Dataset/GS/haizei_1/ \
+  --images dense/images \
+  -m /home/lichanghao/chLi/Dataset/GS/haizei_1/fitting_2dgs/ \
+  --port 6009 \
+  --iteration 30000
