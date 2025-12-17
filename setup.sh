@@ -1,3 +1,9 @@
+cd ..
+git clone https://github.com/565353780/sibr-core.git
+
+cd sibr-core
+./setup.sh
+
 pip3 install torch torchvision \
   --index-url https://download.pytorch.org/whl/cu124
 

@@ -17,7 +17,11 @@ ca 2dgs
 ## Run
 
 ```bash
-python demo.py
+./train.sh
+./render.sh
+
+./open_viewer.sh
+./view_result.sh
 ```
 
 ## Enjoy it~
