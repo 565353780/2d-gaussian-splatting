@@ -1,18 +1,19 @@
 cd ..
+git clone git@github.com:565353780/base-trainer.git
 git clone git@github.com:565353780/sibr-core.git
+git clone --depth 1 https://github.com/camenduru/simple-knn.git
 
-cd sibr-core
+cd base-trainer
 ./dev_setup.sh
 
-pip3 install torch torchvision \
-  --index-url https://download.pytorch.org/whl/cu124
-
-pip install ffmpeg pillow open3d mediapy lpips \
-  scikit-image tqdm trimesh plyfile opencv-python \
-  tensorboard ninja
-
-cd ../2d-gaussian-splatting/submodules/diff-surfel-rasterization
-python setup.py install
+cd ../sibr-core
+./dev_setup.sh
 
 cd ../simple-knn
+python setup.py install
+
+pip install ffmpeg pillow mediapy lpips scikit-image \
+  plyfile opencv-python ninja
+
+cd ../2d-gaussian-splatting/submodules/diff-surfel-rasterization
 python setup.py install

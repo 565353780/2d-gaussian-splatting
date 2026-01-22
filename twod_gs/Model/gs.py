@@ -1,14 +1,15 @@
+import os
 import torch
 import numpy as np
-from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
 from torch import nn
-import os
-from utils.system_utils import mkdir_p
 from plyfile import PlyData, PlyElement
+
 from utils.sh_utils import RGB2SH
-from simple_knn._C import distCUDA2
+from utils.system_utils import mkdir_p
 from utils.graphics_utils import BasicPointCloud
-from utils.general_utils import build_scaling_rotation
+from utils.general_utils import build_scaling_rotation, build_rotation
+from utils.general_utils import inverse_sigmoid, get_expon_lr_func
+
 
 class GaussianModel:
 
@@ -20,7 +21,7 @@ class GaussianModel:
             trans[:, 3,:3] = center
             trans[:, 3, 3] = 1
             return trans
-        
+
         self.scaling_activation = torch.exp
         self.scaling_inverse_activation = torch.log
 
@@ -365,7 +366,7 @@ class GaussianModel:
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
-        
+
         new_xyz = self._xyz[selected_pts_mask]
         new_features_dc = self._features_dc[selected_pts_mask]
         new_features_rest = self._features_rest[selected_pts_mask]
