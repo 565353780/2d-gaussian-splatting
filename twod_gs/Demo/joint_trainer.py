@@ -1,5 +1,5 @@
-from mash_2dgs.Config.custom_path import DATA_DICTS, TEST_DATA_NAME
-from mash_2dgs.Module.joint_trainer import JointTrainer
+from twod_gs.Config.custom_path import DATA_DICTS, TEST_DATA_NAME
+from twod_gs.Module.joint_trainer import JointTrainer
 
 def demo(anchor_cluster_point_num: int = 400):
     data_dict = DATA_DICTS[TEST_DATA_NAME]

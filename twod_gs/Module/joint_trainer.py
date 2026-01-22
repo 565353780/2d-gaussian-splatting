@@ -6,9 +6,9 @@ from tqdm import tqdm
 from typing import Union
 from random import randint
 
-from mash_2dgs.Config.joint_optimization_params import JointOptimizationParams
-from mash_2dgs.Module.trainer import Trainer
-from mash_2dgs.Module.mash_refiner import MashRefiner
+from twod_gs.Config.joint_optimization_params import JointOptimizationParams
+from twod_gs.Module.trainer import Trainer
+from twod_gs.Module.mash_refiner import MashRefiner
 
 class JointTrainer(object):
     def __init__(self,
