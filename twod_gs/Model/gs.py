@@ -2,6 +2,7 @@ import os
 import torch
 import numpy as np
 from torch import nn
+from simple_knn._C import distCUDA2
 from plyfile import PlyData, PlyElement
 
 from utils.sh_utils import RGB2SH

@@ -2,10 +2,8 @@ import os
 import torch
 from torch import nn
 from tqdm import tqdm
-from random import randint
 from typing import Tuple, Union
 
-from scene import Scene
 from utils.general_utils import safe_state
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
@@ -13,39 +11,23 @@ from utils.image_utils import psnr, render_net_image
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 
+from base_trainer.Module.logger import Logger
 from base_trainer.Module.base_trainer import BaseTrainer
 
+from twod_gs.Dataset.scene import Scene
 from twod_gs.Method.cmd import runCMD
 from twod_gs.Model.gs import GaussianModel
 
-class Trainer(BaseTrainer):
+class Trainer(object):
     def __init__(
         self,
-        batch_size: int = 5,
-        accum_iter: int = 10,
-        num_workers: int = 16,
-        model_file_path: Union[str, None] = None,
-        weights_only: bool = False,
-        device: str = "cuda:0",
-        dtype=torch.float32,
-        warm_step_num: int = 2000,
-        finetune_step_num: int = -1,
-        lr: float = 2e-4,
-        lr_batch_size: int = 256,
-        ema_start_step: int = 5000,
-        ema_decay_init: float = 0.99,
-        ema_decay: float = 0.999,
-        save_result_folder_path: Union[str, None] = None,
-        save_log_folder_path: Union[str, None] = None,
-        best_model_metric_name: Union[str, None] = None,
-        is_metric_lower_better: bool = True,
-        sample_results_freq: int = -1,
-        use_amp: bool = False,
-        quick_test: bool = False,
         source_path: str='',
-        images: str='',
-        ply_file_path: Union[str, None]=None,
+        save_result_folder_path: str='./output/',
+        save_log_folder_path: str='./logs/',
     ) -> None:
+        self.save_result_folder_path = save_result_folder_path
+        self.save_log_folder_path = save_log_folder_path
+
         self.test_freq = 5000
         self.save_freq = 5000
 
@@ -57,113 +39,41 @@ class Trainer(BaseTrainer):
         args = parser.parse_args()
 
         args.source_path = source_path
-        args.images = images
         args.resolution = 1
-        args.model_path = self.save_result_folder_path
+        args.model_path = save_result_folder_path
 
         print("Optimizing " + args.model_path)
+        os.makedirs(args.model_path, exist_ok=True)
         with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
             cfg_log_f.write(str(Namespace(**vars(args))))
 
         self.dataset = lp.extract(args)
         self.opt = op.extract(args)
         self.pipe = pp.extract(args)
-        self.ply_file_path = ply_file_path
 
         safe_state(silent=False)
 
-        self.scene = Scene(self.dataset, self.gaussians)
-        self.gaussians.training_setup(self.opt)
-
         bg_color = [1, 1, 1] if self.dataset.white_background else [0, 0, 0]
-        self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+        self.background = torch.tensor(bg_color, dtype=torch.float32, device='cuda')
 
-        self.render_freq = -1
+        self.logger = Logger()
+        self.scene: Scene
+        self.gaussians: GaussianModel
 
-        super().__init__(
-            batch_size,
-            accum_iter,
-            num_workers,
-            model_file_path,
-            weights_only,
-            device,
-            dtype,
-            warm_step_num,
-            finetune_step_num,
-            lr,
-            lr_batch_size,
-            ema_start_step,
-            ema_decay_init,
-            ema_decay,
-            save_result_folder_path,
-            save_log_folder_path,
-            best_model_metric_name,
-            is_metric_lower_better,
-            sample_results_freq,
-            use_amp,
-            quick_test,
-        )
+        BaseTrainer.initRecords(self)
+        self.createDatasets()
+        self.createModel()
         return
 
     def createDatasets(self) -> bool:
-        self.dataloader_dict["name"] = {
-            "dataset": Dataset(self.dtype),
-            "repeat_num": 1,
-        }
-
-        self.dataloader_dict["eval"] = {
-            "dataset": Dataset(self.dtype),
-        }
-
-        # crop data num for faster evaluation
-        self.dataloader_dict["eval"]["dataset"].data_list = self.dataloader_dict[
-            "eval"
-        ]["dataset"].data_list[:64]
+        self.scene = Scene(self.dataset)
         return True
 
     def createModel(self) -> bool:
-        self.model = GaussianModel(self.dataset.sh_degree)
-        if self.ply_file_path is not None:
-            if os.path.exists(self.ply_file_path):
-                self.model.load_ply(self.ply_file_path)
-        return True
+        self.gaussians = GaussianModel(self.dataset.sh_degree)
+        self.gaussians.training_setup(self.opt)
 
-    def preProcessData(self, data_dict: dict, is_training: bool = False) -> dict:
-        if is_training:
-            data_dict["drop_prob"] = 0.0
-        else:
-            data_dict["drop_prob"] = 0.0
-
-        return data_dict
-
-    def getLossDict(self, data_dict: dict, result_dict: dict) -> dict:
-        ut = data_dict["ut"]
-        vt = result_dict["vt"]
-
-        loss = torch.pow(vt - ut, 2).mean()
-
-        loss_dict = {
-            "Loss": loss,
-        }
-
-        return loss_dict
-
-    @torch.no_grad()
-    def sampleModelStep(self, model: torch.nn.Module, model_name: str) -> bool:
-        sample_num = 3
-        dataset = self.dataloader_dict["mash"]["dataset"]
-
-        model.eval()
-
-        data = dataset.__getitem__(0)
-
-        # process data here
-        pcd = data["pcd"]
-        mesh = data["mesh"]
-
-        self.logger.addPointCloud(model_name + "/pcd_0", pcd, self.step)
-        self.logger.addMesh(model_name + "/mesh_0", mesh, self.step)
-
+        self.gaussians.create_from_pcd(self.scene.scene_info.point_cloud, self.scene.cameras_extent)
         return True
 
     def renderImage(self, viewpoint_cam, scaling_modifer: float = 1.0) -> dict:
@@ -286,63 +196,58 @@ class Trainer(BaseTrainer):
         self.logger.addScalar('Loss/surface', surface_loss, iteration)
         self.logger.addScalar('Loss/total', total_loss, iteration)
 
-        self.logger.addScalar('Gaussian/total_points', self.scene.gaussians.get_xyz.shape[0], iteration)
+        self.logger.addScalar('Gaussian/total_points', self.gaussians.get_xyz.shape[0], iteration)
         self.logger.addScalar('Gaussian/scale', torch.mean(self.gaussians.get_scaling).detach().clone().cpu().numpy(), iteration)
         self.logger.addScalar('Gaussian/opacity', torch.mean(self.gaussians.get_opacity).detach().clone().cpu().numpy(), iteration)
         self.logger.addScalar('Gaussian/split_num', self.gaussians.split_pts_num, iteration)
         self.logger.addScalar('Gaussian/clone_num', self.gaussians.clone_pts_num, iteration)
         self.logger.addScalar('Gaussian/prune_num', self.gaussians.prune_pts_num, iteration)
-        if isinstance(self.gaussians, MashGS):
-            self.logger.addScalar('Gaussian/anchor_num', self.gaussians.mash.anchor_num, iteration)
 
         # Report test and samples of training set
         if iteration % self.test_freq == 0:
             torch.cuda.empty_cache()
-            validation_configs = ({'name': 'test', 'cameras' : self.scene.getTestCameras()}, 
-                                {'name': 'train', 'cameras' : [self.scene.getTrainCameras()[idx % len(self.scene.getTrainCameras())] for idx in range(5, 30, 5)]})
+            config = {'name': 'train', 'cameras' : [idx % len(self.scene) for idx in range(5, 30, 5)]}
+            if config['cameras'] and len(config['cameras']) > 0:
+                l1_test = 0.0
+                psnr_test = 0.0
+                for idx, viewpoint in enumerate(config['cameras']):
+                    render_pkg = self.renderImage(viewpoint)
+                    image = torch.clamp(render_pkg["render"], 0.0, 1.0)
+                    gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
+                    if self.logger.isValid() and (idx < 5):
+                        from utils.general_utils import colormap
+                        depth = render_pkg["surf_depth"]
+                        norm = depth.max()
+                        depth = depth / norm
+                        depth = colormap(depth.cpu().numpy()[0], cmap='turbo')
+                        self.logger.summary_writer.add_images(config['name'] + "_view_{}/depth".format(viewpoint.image_name), depth[None], global_step=iteration)
+                        self.logger.summary_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
 
-            for config in validation_configs:
-                if config['cameras'] and len(config['cameras']) > 0:
-                    l1_test = 0.0
-                    psnr_test = 0.0
-                    for idx, viewpoint in enumerate(config['cameras']):
-                        render_pkg = self.renderImage(viewpoint)
-                        image = torch.clamp(render_pkg["render"], 0.0, 1.0)
-                        gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
-                        if self.logger.isValid() and (idx < 5):
-                            from utils.general_utils import colormap
-                            depth = render_pkg["surf_depth"]
-                            norm = depth.max()
-                            depth = depth / norm
-                            depth = colormap(depth.cpu().numpy()[0], cmap='turbo')
-                            self.logger.summary_writer.add_images(config['name'] + "_view_{}/depth".format(viewpoint.image_name), depth[None], global_step=iteration)
-                            self.logger.summary_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
+                        try:
+                            rend_alpha = render_pkg['rend_alpha']
+                            rend_normal = render_pkg["rend_normal"] * 0.5 + 0.5
+                            surf_normal = render_pkg["surf_normal"] * 0.5 + 0.5
+                            self.logger.summary_writer.add_images(config['name'] + "_view_{}/rend_normal".format(viewpoint.image_name), rend_normal[None], global_step=iteration)
+                            self.logger.summary_writer.add_images(config['name'] + "_view_{}/surf_normal".format(viewpoint.image_name), surf_normal[None], global_step=iteration)
+                            self.logger.summary_writer.add_images(config['name'] + "_view_{}/rend_alpha".format(viewpoint.image_name), rend_alpha[None], global_step=iteration)
 
-                            try:
-                                rend_alpha = render_pkg['rend_alpha']
-                                rend_normal = render_pkg["rend_normal"] * 0.5 + 0.5
-                                surf_normal = render_pkg["surf_normal"] * 0.5 + 0.5
-                                self.logger.summary_writer.add_images(config['name'] + "_view_{}/rend_normal".format(viewpoint.image_name), rend_normal[None], global_step=iteration)
-                                self.logger.summary_writer.add_images(config['name'] + "_view_{}/surf_normal".format(viewpoint.image_name), surf_normal[None], global_step=iteration)
-                                self.logger.summary_writer.add_images(config['name'] + "_view_{}/rend_alpha".format(viewpoint.image_name), rend_alpha[None], global_step=iteration)
+                            rend_dist = render_pkg["rend_dist"]
+                            rend_dist = colormap(rend_dist.cpu().numpy()[0])
+                            self.logger.summary_writer.add_images(config['name'] + "_view_{}/rend_dist".format(viewpoint.image_name), rend_dist[None], global_step=iteration)
+                        except:
+                            pass
 
-                                rend_dist = render_pkg["rend_dist"]
-                                rend_dist = colormap(rend_dist.cpu().numpy()[0])
-                                self.logger.summary_writer.add_images(config['name'] + "_view_{}/rend_dist".format(viewpoint.image_name), rend_dist[None], global_step=iteration)
-                            except:
-                                pass
+                        if iteration == 1:
+                            self.logger.summary_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
 
-                            if iteration == 1:
-                                self.logger.summary_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
+                    l1_test += l1_loss(image, gt_image).mean().double()
+                    psnr_test += psnr(image, gt_image).mean().double()
 
-                        l1_test += l1_loss(image, gt_image).mean().double()
-                        psnr_test += psnr(image, gt_image).mean().double()
-
-                    psnr_test /= len(config['cameras'])
-                    l1_test /= len(config['cameras'])
-                    print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
-                    self.logger.addScalar('Val/l1', l1_test, iteration)
-                    self.logger.addScalar('Val/psnr', psnr_test, iteration)
+                psnr_test /= len(config['cameras'])
+                l1_test /= len(config['cameras'])
+                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
+                self.logger.addScalar('Val/l1', l1_test, iteration)
+                self.logger.addScalar('Val/psnr', psnr_test, iteration)
 
             torch.cuda.empty_cache()
         return True
@@ -405,17 +310,13 @@ class Trainer(BaseTrainer):
         return True
 
     def trainForever(self) -> bool:
-        viewpoint_stack = None
-
         progress_bar = tqdm(desc="Training forever progress")
         iteration = 0
         while True:
             iteration += 1
 
             # Pick a random Camera
-            if not viewpoint_stack:
-                viewpoint_stack = self.scene.getTrainCameras().copy()
-            viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+            viewpoint_cam = self.scene[iteration]
 
             render_pkg, loss_dict = self.trainStep(iteration, viewpoint_cam)
 
@@ -452,15 +353,11 @@ class Trainer(BaseTrainer):
         if iteration_num < 0:
             return self.trainForever()
 
-        viewpoint_stack = None
-
         progress_bar = tqdm(desc="Training progress", total=iteration_num)
         iteration = 1
-        for _ in range(iteration_num):
+        for i in range(iteration_num):
             # Pick a random Camera
-            if not viewpoint_stack:
-                viewpoint_stack = self.scene.getTrainCameras().copy()
-            viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+            viewpoint_cam = self.scene[i]
 
             render_pkg, loss_dict = self.trainStep(iteration, viewpoint_cam)
 
@@ -491,11 +388,6 @@ class Trainer(BaseTrainer):
 
             self.updateGSParams()
 
-            if isinstance(self.gaussians, MashGS):
-                if self.render_freq > 0:
-                    if iteration % self.render_freq == 0:
-                        renderMashGS(self.gaussians)
-
             self.renderForViewer(loss_dict)
 
             iteration += 1
@@ -511,7 +403,6 @@ class Trainer(BaseTrainer):
 
         command = 'conda run -n ' + conda_env_name + ' python render.py' + \
             ' -s ' + self.dataset.source_path + \
-            ' --images ' + self.dataset.images + \
             ' -m ' + self.save_result_folder_path + \
             ' --num_cluster 1' + \
             ' --iteration ' + str(iteration)

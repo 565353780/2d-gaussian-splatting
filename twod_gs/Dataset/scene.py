@@ -14,7 +14,7 @@ class Scene:
         """
         self.model_path = args.model_path
 
-        self.cameras = {}
+        self.cameras = []
 
         scene_info = readColmapSceneInfo(args.source_path, args.images)
 
@@ -37,7 +37,7 @@ class Scene:
         print("Loading Training Cameras")
         self.cameras = cameraList_from_camInfos(scene_info.cameras, 1.0, args)
 
-        self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
+        self.scene_info = scene_info
         return
 
     def __len__(self) -> int:
