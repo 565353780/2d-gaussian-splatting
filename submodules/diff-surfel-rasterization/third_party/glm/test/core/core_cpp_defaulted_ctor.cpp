@@ -1,5 +1,7 @@
 #include <glm/glm.hpp>
 
+#if GLM_CONFIG_DEFAULTED_FUNCTIONS == GLM_ENABLE
+
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/vec1.hpp>
@@ -126,13 +128,17 @@ static int test_quat_memcpy()
 	return Error;
 }
 
+#endif//GLM_CONFIG_DEFAULTED_FUNCTIONS == GLM_ENABLE
+
 int main()
 {
 	int Error = 0;
 
-	Error += test_vec_memcpy();
-	Error += test_mat_memcpy();
-	Error += test_quat_memcpy();
+#	if GLM_CONFIG_DEFAULTED_FUNCTIONS == GLM_ENABLE
+		Error += test_vec_memcpy();
+		Error += test_mat_memcpy();
+		Error += test_quat_memcpy();
+#	endif//GLM_CONFIG_DEFAULTED_FUNCTIONS == GLM_ENABLE
 
 	return Error;
 }

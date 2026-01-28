@@ -3,7 +3,7 @@
 #if GLM_CONFIG_ANONYMOUS_STRUCT == GLM_ENABLE
 struct vec2;
 
-struct swizzleStruct
+struct _swizzle
 {
 	char _buffer[1];
 };
@@ -14,26 +14,11 @@ struct vec2
 		x(0), y(0)
 	{}
 
-#if (GLM_COMPILER & GLM_COMPILER_VC)
-#	pragma warning(push)
-#	pragma warning(disable: 4201)  // nonstandard extension used : nameless struct/union
-#elif (GLM_COMPILER & GLM_COMPILER_CLANG)
-#	pragma clang diagnostic push
-#	pragma clang diagnostic ignored "-Wgnu-anonymous-struct"
-#	pragma clang diagnostic ignored "-Wnested-anon-types"
-#endif
-
 	union
 	{
 		struct { float x, y; };
-		struct { swizzleStruct xx; };
+		struct { _swizzle xx; };
 	};
-
-#if (GLM_COMPILER & GLM_COMPILER_VC)
-#	pragma warning(pop)
-#elif (GLM_COMPILER & GLM_COMPILER_CLANG)
-#	pragma clang diagnostic pop
-#endif
 };
 #endif
 

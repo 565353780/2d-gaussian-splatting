@@ -1,9 +1,11 @@
 #include <glm/ext/vector_int2_sized.hpp>
 
-static_assert(sizeof(glm::i8vec2) == 2, "int8 size isn't 1 byte on this platform");
-static_assert(sizeof(glm::i16vec2) == 4, "int16 size isn't 2 bytes on this platform");
-static_assert(sizeof(glm::i32vec2) == 8, "int32 size isn't 4 bytes on this platform");
-static_assert(sizeof(glm::i64vec2) == 16, "int64 size isn't 8 bytes on this platform");
+#if GLM_HAS_STATIC_ASSERT
+	static_assert(sizeof(glm::i8vec2) == 2, "int8 size isn't 1 byte on this platform");
+	static_assert(sizeof(glm::i16vec2) == 4, "int16 size isn't 2 bytes on this platform");
+	static_assert(sizeof(glm::i32vec2) == 8, "int32 size isn't 4 bytes on this platform");
+	static_assert(sizeof(glm::i64vec2) == 16, "int64 size isn't 8 bytes on this platform");
+#endif
 
 static int test_size()
 {

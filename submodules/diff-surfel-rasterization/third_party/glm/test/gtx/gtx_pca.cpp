@@ -6,11 +6,8 @@
 
 #include <cstdio>
 #include <vector>
+#if GLM_HAS_CXX11_STL == 1
 #include <random>
-
-#if GLM_COMPILER & GLM_COMPILER_CLANG
-#	pragma clang diagnostic push
-#	pragma clang diagnostic ignored "-Wsign-conversion"
 #endif
 
 template<typename T>
@@ -21,7 +18,7 @@ template<>
 GLM_INLINE GLM_CONSTEXPR double myEpsilon<double>() { return 0.000001; }
 
 template<glm::length_t D, typename T, glm::qualifier Q>
-static bool vectorEpsilonEqual(glm::vec<D, T, Q> const& a, glm::vec<D, T, Q> const& b, T epsilon)
+bool vectorEpsilonEqual(glm::vec<D, T, Q> const& a, glm::vec<D, T, Q> const& b, T epsilon)
 {
 	for (int c = 0; c < D; ++c)
 		if (!glm::epsilonEqual(a[c], b[c], epsilon))
@@ -38,7 +35,7 @@ static bool vectorEpsilonEqual(glm::vec<D, T, Q> const& a, glm::vec<D, T, Q> con
 }
 
 template<glm::length_t D, typename T, glm::qualifier Q>
-static bool matrixEpsilonEqual(glm::mat<D, D, T, Q> const& a, glm::mat<D, D, T, Q> const& b, T epsilon)
+bool matrixEpsilonEqual(glm::mat<D, D, T, Q> const& a, glm::mat<D, D, T, Q> const& b, T epsilon)
 {
 	for (int c = 0; c < D; ++c)
 		for (int r = 0; r < D; ++r)
@@ -62,7 +59,7 @@ GLM_INLINE bool sameSign(T const& a, T const& b)
 }
 
 template<typename T>
-static T failReport(T line)
+T failReport(T line)
 {
 	fprintf(stderr, "Failed in line %d\n", static_cast<int>(line));
 	return line;
@@ -71,13 +68,13 @@ static T failReport(T line)
 // Test data: 1AGA 'agarose double helix'
 // https://www.rcsb.org/structure/1aga
 // The fourth coordinate is randomized
-namespace agarose
+namespace _1aga
 {
 
 	// Fills `outTestData` with hard-coded atom positions from 1AGA
 	// The fourth coordinate is randomized
 	template<typename vec>
-	static void fillTestData(std::vector<vec>& outTestData)
+	void fillTestData(std::vector<vec>& outTestData)
 	{
 		// x,y,z coordinates copied from RCSB PDB file of 1AGA
 		// w coordinate randomized with standard normal distribution
@@ -219,7 +216,7 @@ namespace agarose
 
 	// All reference values computed separately using symbolic precision
 	// https://github.com/sgrottel/exp-pca-precision
-	// This applies to all functions named: `agarose::expected*()`
+	// This applies to all functions named: `_1aga::expected*()`
 
 	GLM_INLINE glm::dmat4 const& expectedCovarData()
 	{
@@ -336,11 +333,11 @@ namespace agarose
 		return evecs4;
 	}
 
-} // namespace agarose
+} // namespace _1aga
 
 // Compute center of gravity
 template<typename vec>
-static vec computeCenter(const std::vector<vec>& testData)
+vec computeCenter(const std::vector<vec>& testData)
 {
 	double c[4];
 	std::fill(c, c + vec::length(), 0.0);
@@ -358,7 +355,7 @@ static vec computeCenter(const std::vector<vec>& testData)
 
 // Test sorting of Eigenvalue&Eigenvector lists. Use exhaustive search.
 template<glm::length_t D, typename T, glm::qualifier Q>
-static int testEigenvalueSort()
+int testEigenvalueSort()
 {
 	// Test input data: four arbitrary values
 	static const glm::vec<D, T, Q> refVal(
@@ -441,8 +438,12 @@ static int testEigenvalueSort()
 
 // Test covariance matrix creation functions
 template<glm::length_t D, typename T, glm::qualifier Q>
-static int testCovar(
+int testCovar(
+#if GLM_HAS_CXX11_STL == 1
 	glm::length_t dataSize, unsigned int randomEngineSeed
+#else // GLM_HAS_CXX11_STL == 1
+	glm::length_t, unsigned int
+#endif // GLM_HAS_CXX11_STL == 1
 )
 {
 	typedef glm::vec<D, T, Q> vec;
@@ -450,19 +451,20 @@ static int testCovar(
 
 	// #1: test expected result with fixed data set
 	std::vector<vec> testData;
-	agarose::fillTestData(testData);
+	_1aga::fillTestData(testData);
 
 	// compute center of gravity
 	vec center = computeCenter(testData);
 
 	mat covarMat = glm::computeCovarianceMatrix(testData.data(), testData.size(), center);
-	if(!matrixEpsilonEqual(covarMat, mat(agarose::expectedCovarData()), myEpsilon<T>()))
+	if(!matrixEpsilonEqual(covarMat, mat(_1aga::expectedCovarData()), myEpsilon<T>()))
 	{
 		fprintf(stderr, "Reconstructed covarMat:\n%s\n", glm::to_string(covarMat).c_str());
 		return failReport(__LINE__);
 	}
 
-	// #2: test function variant consistency with random data
+	// #2: test function variant consitency with random data
+#if GLM_HAS_CXX11_STL == 1
 	std::default_random_engine rndEng(randomEngineSeed);
 	std::normal_distribution<T> normalDist;
 	testData.resize(dataSize);
@@ -493,19 +495,20 @@ static int testCovar(
 		return failReport(__LINE__);
 	if(!matrixEpsilonEqual(c1, c4, myEpsilon<T>()))
 		return failReport(__LINE__);
+#endif // GLM_HAS_CXX11_STL == 1
 	return 0;
 }
 
 // Computes eigenvalues and eigenvectors from well-known covariance matrix
 template<glm::length_t D, typename T, glm::qualifier Q>
-static int testEigenvectors(T epsilon)
+int testEigenvectors(T epsilon)
 {
 	typedef glm::vec<D, T, Q> vec;
 	typedef glm::mat<D, D, T, Q> mat;
 
 	// test expected result with fixed data set
 	std::vector<vec> testData;
-	mat covarMat(agarose::expectedCovarData());
+	mat covarMat(_1aga::expectedCovarData());
 
 	vec eigenvalues;
 	mat eigenvectors;
@@ -514,13 +517,13 @@ static int testEigenvectors(T epsilon)
 		return failReport(__LINE__);
 	glm::sortEigenvalues(eigenvalues, eigenvectors);
 
-	if (!vectorEpsilonEqual(eigenvalues, vec(agarose::expectedEigenvalues<D>()), epsilon))
+	if (!vectorEpsilonEqual(eigenvalues, vec(_1aga::expectedEigenvalues<D>()), epsilon))
 		return failReport(__LINE__);
 
 	for (int i = 0; i < D; ++i)
 	{
 		vec act = glm::normalize(eigenvectors[i]);
-		vec exp = glm::normalize(agarose::expectedEigenvectors<D>()[i]);
+		vec exp = glm::normalize(_1aga::expectedEigenvectors<D>()[i]);
 		if (!sameSign(act[0], exp[0])) exp = -exp;
 		if (!vectorEpsilonEqual(act, exp, epsilon))
 			return failReport(__LINE__);
@@ -533,7 +536,7 @@ static int testEigenvectors(T epsilon)
 // - a uniformly sampled block
 // - reconstruct main axes
 // - check order of eigenvalues equals order of extends of block in direction of main axes
-static int smokeTest()
+int smokeTest()
 {
 	using glm::vec3;
 	using glm::mat3;
@@ -548,11 +551,11 @@ static int smokeTest()
 	mat3 covar = glm::computeCovarianceMatrix(pts.data(), pts.size());
 	mat3 eVec;
 	vec3 eVal;
-	unsigned int eCnt = glm::findEigenvaluesSymReal(covar, eVal, eVec);
-	if(eCnt != 3u)
+	int eCnt = glm::findEigenvaluesSymReal(covar, eVal, eVec);
+	if(eCnt != 3)
 		return failReport(__LINE__);
 
-	// sort eVec by descending eVal
+	// sort eVec by decending eVal
 	if(eVal[0] < eVal[1])
 	{
 		std::swap(eVal[0], eVal[1]);
@@ -579,7 +582,8 @@ static int smokeTest()
 	return 0;
 }
 
-static int rndTest(unsigned int randomEngineSeed)
+#if GLM_HAS_CXX11_STL == 1
+int rndTest(unsigned int randomEngineSeed)
 {
 	std::default_random_engine rndEng(randomEngineSeed);
 	std::normal_distribution<double> normalDist;
@@ -628,8 +632,8 @@ static int rndTest(unsigned int randomEngineSeed)
 	glm::dmat3 covarMat = glm::computeCovarianceMatrix(ptData.data(), ptData.size(), center);
 	glm::dvec3 evals;
 	glm::dmat3 evecs;
-	unsigned int evcnt = glm::findEigenvaluesSymReal(covarMat, evals, evecs);
-	if(evcnt != 3u)
+	int evcnt = glm::findEigenvaluesSymReal(covarMat, evals, evecs);
+	if(evcnt != 3)
 		return failReport(__LINE__);
 	glm::sortEigenvalues(evals, evecs);
 
@@ -645,6 +649,7 @@ static int rndTest(unsigned int randomEngineSeed)
 
 	return 0;
 }
+#endif // GLM_HAS_CXX11_STL == 1
 
 int main()
 {
@@ -706,16 +711,14 @@ int main()
 		return error;
 
 	// Final tests with randomized data
+#if GLM_HAS_CXX11_STL == 1
 	if(rndTest(12345) != 0)
 		error = failReport(__LINE__);
 	if(rndTest(42) != 0)
 		error = failReport(__LINE__);
 	if (error != 0)
 		return error;
+#endif // GLM_HAS_CXX11_STL == 1
 
 	return error;
 }
-
-#if GLM_COMPILER & GLM_COMPILER_CLANG
-#	pragma clang diagnostic pop
-#endif

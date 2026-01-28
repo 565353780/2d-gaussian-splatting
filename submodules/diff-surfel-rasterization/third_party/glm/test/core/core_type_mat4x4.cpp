@@ -71,13 +71,15 @@ static int test_ctr()
 {
 	int Error = 0;
 
-	static_assert(std::is_trivially_default_constructible<glm::mat4>::value);
-	static_assert(std::is_trivially_copy_assignable<glm::mat4>::value);
-	static_assert(std::is_trivially_copyable<glm::mat4>::value);
-	static_assert(std::is_copy_constructible<glm::mat4>::value);
-
+#if GLM_HAS_TRIVIAL_QUERIES
+	//Error += std::is_trivially_default_constructible<glm::mat4>::value ? 0 : 1;
+	//Error += std::is_trivially_copy_assignable<glm::mat4>::value ? 0 : 1;
+	Error += std::is_trivially_copyable<glm::mat4>::value ? 0 : 1;
+	//Error += std::is_copy_constructible<glm::mat4>::value ? 0 : 1;
 	//Error += std::has_trivial_copy_constructor<glm::mat4>::value ? 0 : 1;
+#endif
 
+#if GLM_HAS_INITIALIZER_LISTS
 	glm::mat4 const m0(
 		glm::vec4(0, 1, 2, 3),
 		glm::vec4(4, 5, 6, 7),
@@ -91,7 +93,7 @@ static int test_ctr()
 	glm::mat4 const m1{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
 
 	glm::mat4 const m2{
-		V,
+		{0, 1, 2, 3},
 		{4, 5, 6, 7},
 		{8, 9, 10, 11},
 		{12, 13, 14, 15}};
@@ -133,6 +135,8 @@ static int test_ctr()
 			{ 12, 13, 14, 15 }
 		}};
 
+#endif//GLM_HAS_INITIALIZER_LISTS
+
 	return Error;
 }
 
@@ -167,6 +171,19 @@ static int test_size()
 	return Error;
 }
 
+static int test_constexpr()
+{
+#if GLM_HAS_CONSTEXPR
+	static_assert(glm::mat4::length() == 4, "GLM: Failed constexpr");
+	constexpr glm::mat4 A(1.f);
+	constexpr glm::mat4 B(1.f);
+	constexpr glm::bvec4 C = glm::equal(A, B, 0.01f);
+	static_assert(glm::all(C), "GLM: Failed constexpr");
+#endif
+
+	return 0;
+}
+
 int main()
 {
 	int Error = 0;
@@ -195,6 +212,7 @@ int main()
 	Error += test_inverse<glm::highp_dmat4>();
 
 	Error += test_size();
+	Error += test_constexpr();
 
 	return Error;
 }

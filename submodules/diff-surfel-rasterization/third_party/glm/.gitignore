@@ -47,7 +47,6 @@ test/gtc/*.dds
 Makefile
 *.cbp
 *.user
-.idea/
 
 # Misc.
 *.log

@@ -17,10 +17,12 @@
 #include "../glm.hpp"
 #include "../gtx/transform.hpp"
 
-#ifndef GLM_ENABLE_EXPERIMENTAL
-#	error "GLM: GLM_GTX_transform2 is an experimental extension and may change in the future. Use #define GLM_ENABLE_EXPERIMENTAL before including it, if you really want to use it."
-#elif GLM_MESSAGES == GLM_ENABLE && !defined(GLM_EXT_INCLUDED)
-#	pragma message("GLM: GLM_GTX_transform2 extension included")
+#if GLM_MESSAGES == GLM_ENABLE && !defined(GLM_EXT_INCLUDED)
+#	ifndef GLM_ENABLE_EXPERIMENTAL
+#		pragma message("GLM: GLM_GTX_transform2 is an experimental extension and may change in the future. Use #define GLM_ENABLE_EXPERIMENTAL before including it, if you really want to use it.")
+#	else
+#		pragma message("GLM: GLM_GTX_transform2 extension included")
+#	endif
 #endif
 
 namespace glm
@@ -57,15 +59,9 @@ namespace glm
 	// Identity + tan(angle) * cross(Normal, OnPlaneVector)     0
 	// - dot(PointOnPlane, normal) * OnPlaneVector              1
 
-	//! Reflects a matrix on an arbitrary plane.
-	//! From GLM_GTX_transform2 extension.
-	template<typename T, qualifier Q>
-	GLM_FUNC_DECL mat<3, 3, T, Q> reflect2D(mat<3, 3, T, Q> const& m, vec<2, T, Q> const& normal, T distance);
-
-	//! Reflects a matrix on an arbitrary plane.
-	//! From GLM_GTX_transform2 extension.
-	template<typename T, qualifier Q>
-	GLM_FUNC_DECL mat<4, 4, T, Q> reflect3D(mat<4, 4, T, Q> const& m, vec<3, T, Q> const& normal, T distance);
+	// Reflect functions seem to don't work
+	//template<typename T> mat<3, 3, T, Q> reflect2D(const mat<3, 3, T, Q> & m, const vec<3, T, Q>& normal){return reflect2DGTX(m, normal);}									//!< \brief Build a reflection matrix (from GLM_GTX_transform2 extension)
+	//template<typename T> mat<4, 4, T, Q> reflect3D(const mat<4, 4, T, Q> & m, const vec<3, T, Q>& normal){return reflect3DGTX(m, normal);}									//!< \brief Build a reflection matrix (from GLM_GTX_transform2 extension)
 
 	//! Build planar projection matrix along normal axis.
 	//! From GLM_GTX_transform2 extension.

@@ -6,21 +6,13 @@
 #include <glm/vector_relational.hpp>
 #include <glm/vec2.hpp>
 #include <vector>
-#include <type_traits>
-
-#if GLM_COMPILER & GLM_COMPILER_CLANG
-#	pragma clang diagnostic push
-#	pragma clang diagnostic ignored "-Wglobal-constructors"
-#	pragma clang diagnostic ignored "-Wunused-variable"
+#if GLM_HAS_TRIVIAL_QUERIES
+#	include <type_traits>
 #endif
 
 static glm::ivec2 g1;
 static glm::ivec2 g2(1);
 static glm::ivec2 g3(1, 1);
-
-#if GLM_COMPILER & GLM_COMPILER_CLANG
-#	pragma clang diagnostic pop
-#endif
 
 static int test_operators()
 {
@@ -162,17 +154,7 @@ static int test_operators()
 		B /= A;
 		Error += B == glm::ivec2(4, 8) ? 0 : 1;
 
-		B /= 2;
-		Error += B == glm::ivec2(2, 4) ? 0 : 1;
-	}
-	{
-		glm::ivec2 A(1.0f, 2.0f);
-		glm::ivec2 B(4.0f, 16.0f);
-
-		B = B / A;
-		Error += B == glm::ivec2(4, 8) ? 0 : 1;
-
-		B = B / 2;
+		B /= 2.0f;
 		Error += B == glm::ivec2(2, 4) ? 0 : 1;
 	}
 	{
@@ -227,7 +209,7 @@ static int test_ctor()
 		Error += A == B ? 0 : 1;
 	}
 
-	{
+#	if GLM_HAS_TRIVIAL_QUERIES
 	//	Error += std::is_trivially_default_constructible<glm::vec2>::value ? 0 : 1;
 	//	Error += std::is_trivially_copy_assignable<glm::vec2>::value ? 0 : 1;
 		Error += std::is_trivially_copyable<glm::vec2>::value ? 0 : 1;
@@ -236,12 +218,13 @@ static int test_ctor()
 		Error += std::is_trivially_copyable<glm::uvec2>::value ? 0 : 1;
 
 		Error += std::is_copy_constructible<glm::vec2>::value ? 0 : 1;
-	}
+#	endif
 
+#if GLM_HAS_INITIALIZER_LISTS
 	{
 		glm::vec2 a{ 0, 1 };
 		std::vector<glm::vec2> v = {
-			a,
+			{0, 1},
 			{4, 5},
 			{8, 9}};
 	}
@@ -249,29 +232,19 @@ static int test_ctor()
 	{
 		glm::dvec2 a{ 0, 1 };
 		std::vector<glm::dvec2> v = {
-			a,
+			{0, 1},
 			{4, 5},
 			{8, 9}};
 	}
+#endif
 
 	{
 		glm::vec2 A = glm::vec2(2.0f);
-		Error += glm::all(glm::equal(A, glm::vec2(2.0f), glm::epsilon<float>())) ? 0 : 1;
-
 		glm::vec2 B = glm::vec2(2.0f, 3.0f);
-		Error += glm::all(glm::equal(B, glm::vec2(2.0f, 3.0f), glm::epsilon<float>())) ? 0 : 1;
-
 		glm::vec2 C = glm::vec2(2.0f, 3.0);
-		Error += glm::all(glm::equal(C, glm::vec2(2.0f, 3.0f), glm::epsilon<float>())) ? 0 : 1;
-
 		//glm::vec2 D = glm::dvec2(2.0); // Build error TODO: What does the specification says?
-
-
 		glm::vec2 E(glm::dvec2(2.0));
-		Error += glm::all(glm::equal(E, glm::vec2(2.0f), glm::epsilon<float>())) ? 0 : 1;
-
 		glm::vec2 F(glm::ivec2(2));
-		Error += glm::all(glm::equal(F, glm::vec2(2.0f), glm::epsilon<float>())) ? 0 : 1;
 	}
 
 	{
@@ -328,7 +301,7 @@ static int test_size()
 	Error += glm::vec2::length() == 2 ? 0 : 1;
 	Error += glm::dvec2::length() == 2 ? 0 : 1;
 
-	GLM_CONSTEXPR glm::length_t Length = glm::vec2::length();
+	GLM_CONSTEXPR std::size_t Length = glm::vec2::length();
 	Error += Length == 2 ? 0 : 1;
 
 	return Error;
@@ -359,6 +332,18 @@ static int test_operator_increment()
 	Error += i1 == i3 ? 0 : 1;
 
 	return Error;
+}
+
+static int test_constexpr()
+{
+#if GLM_HAS_CONSTEXPR
+	static_assert(glm::vec2::length() == 2, "GLM: Failed constexpr");
+	static_assert(glm::vec2(1.0f).x > 0.0f, "GLM: Failed constexpr");
+	static_assert(glm::vec2(1.0f, -1.0f).x > 0.0f, "GLM: Failed constexpr");
+	static_assert(glm::vec2(1.0f, -1.0f).y < 0.0f, "GLM: Failed constexpr");
+#endif
+
+	return 0;
 }
 
 static int test_swizzle()
@@ -394,11 +379,6 @@ static int test_swizzle()
 
 int main()
 {
-	// Suppress unused variable warnings
-	(void)g1;
-	(void)g2;
-	(void)g3;
-
 	int Error = 0;
 
 	Error += test_size();
@@ -406,6 +386,7 @@ int main()
 	Error += test_operators();
 	Error += test_operator_increment();
 	Error += test_swizzle();
+	Error += test_constexpr();
 
 	return Error;
 }

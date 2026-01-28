@@ -16,43 +16,28 @@
 
 static int test_operators()
 {
-	int Error = 0;
-
 	glm::mat2x4 l(1.0f);
 	glm::mat2x4 m(1.0f);
 	glm::vec2 u(1.0f);
 	glm::vec4 v(1.0f);
-
 	float x = 1.0f;
 	glm::vec4 a = m * u;
-	Error += glm::all(glm::equal(a, glm::vec4(u, 0.0f, 0.0f), glm::epsilon<float>())) ? 0 : 1;
-
 	glm::vec2 b = v * m;
-	Error += glm::all(glm::equal(b, glm::vec2(1.0f), glm::epsilon<float>())) ? 0 : 1;
-
-	glm::mat2x4 n0(1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f);
-	glm::mat2x4 n = x / n0;
-	Error += glm::all(glm::equal(n, n0, glm::epsilon<float>())) ? 0 : 1;
-
+	glm::mat2x4 n = x / m;
 	glm::mat2x4 o = m / x;
-	Error += glm::all(glm::equal(o, m, glm::epsilon<float>())) ? 0 : 1;
-
 	glm::mat2x4 p = x * m;
-	Error += glm::all(glm::equal(p, m, glm::epsilon<float>())) ? 0 : 1;
-
 	glm::mat2x4 q = m * x;
 	bool R = glm::any(glm::notEqual(m, q, glm::epsilon<float>()));
 	bool S = glm::all(glm::equal(m, l, glm::epsilon<float>()));
 
-	Error += (S && !R) ? 0 : 1;
-
-	return Error;
+	return (S && !R) ? 0 : 1;
 }
 
-static int test_ctr()
+int test_ctr()
 {
-	int Error = 0;
+	int Error(0);
 
+#if(GLM_HAS_INITIALIZER_LISTS)
 	glm::mat2x4 m0(
 		glm::vec4(0, 1, 2, 3),
 		glm::vec4(4, 5, 6, 7));
@@ -81,6 +66,8 @@ static int test_ctr()
 			{ 4, 5, 6, 7}
 		}
 	};
+	
+#endif//GLM_HAS_INITIALIZER_LISTS
 
 	return Error;
 }
@@ -88,7 +75,7 @@ static int test_ctr()
 namespace cast
 {
 	template<typename genType>
-	static int entry()
+	int entry()
 	{
 		int Error = 0;
 
@@ -102,7 +89,7 @@ namespace cast
 		return Error;
 	}
 
-	static int test()
+	int test()
 	{
 		int Error = 0;
 		
@@ -134,6 +121,15 @@ static int test_size()
 	return Error;
 }
 
+static int test_constexpr()
+{
+#if GLM_HAS_CONSTEXPR
+	static_assert(glm::mat2x4::length() == 2, "GLM: Failed constexpr");
+#endif
+
+	return 0;
+}
+
 int main()
 {
 	int Error = 0;
@@ -142,6 +138,7 @@ int main()
 	Error += test_ctr();
 	Error += test_operators();
 	Error += test_size();
+	Error += test_constexpr();
 
 	return Error;
 }

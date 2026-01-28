@@ -10,14 +10,9 @@
 #include <cmath>
 #include <cfloat>
 
-#if GLM_COMPILER & GLM_COMPILER_VC
+#if(GLM_COMPILER & GLM_COMPILER_VC)
 #	pragma warning(push)
 #	pragma warning(disable : 4127)
-#	pragma warning(disable : 4365) // '=': signed/unsigned mismatch
-#elif GLM_COMPILER & GLM_COMPILER_CLANG
-#	pragma clang diagnostic push
-#	pragma clang diagnostic ignored "-Wsign-conversion"
-#	pragma clang diagnostic ignored "-Wpadded"
 #endif
 
 typedef union
@@ -49,13 +44,13 @@ typedef union
 	do {									\
 		ieee_float_shape_type gf_u;			\
 		gf_u.value = (d);					\
-		(i) = static_cast<int>(gf_u.word);	\
+		(i) = gf_u.word;					\
 	} while (0)
 
 #define GLM_SET_FLOAT_WORD(d,i)				\
 	do {									\
 		ieee_float_shape_type sf_u;			\
-		sf_u.word = static_cast<unsigned int>(i);	\
+		sf_u.word = (i);					\
 		(d) = sf_u.value;					\
 	} while (0)
 
@@ -187,10 +182,8 @@ namespace detail
 }//namespace detail
 }//namespace glm
 
-#if GLM_COMPILER & GLM_COMPILER_VC
+#if(GLM_COMPILER & GLM_COMPILER_VC)
 #	pragma warning(pop)
-#elif GLM_COMPILER & GLM_COMPILER_CLANG
-#	pragma clang diagnostic pop
 #endif
 
 namespace glm
@@ -198,19 +191,35 @@ namespace glm
 	template<>
 	GLM_FUNC_QUALIFIER float nextFloat(float x)
 	{
-		return std::nextafter(x, std::numeric_limits<float>::max());
+#		if GLM_HAS_CXX11_STL
+			return std::nextafter(x, std::numeric_limits<float>::max());
+#		elif((GLM_COMPILER & GLM_COMPILER_VC) || ((GLM_COMPILER & GLM_COMPILER_INTEL) && (GLM_PLATFORM & GLM_PLATFORM_WINDOWS)))
+			return detail::nextafterf(x, FLT_MAX);
+#		elif(GLM_PLATFORM & GLM_PLATFORM_ANDROID)
+			return __builtin_nextafterf(x, FLT_MAX);
+#		else
+			return nextafterf(x, FLT_MAX);
+#		endif
 	}
 
 	template<>
 	GLM_FUNC_QUALIFIER double nextFloat(double x)
 	{
-		return std::nextafter(x, std::numeric_limits<double>::max());
+#		if GLM_HAS_CXX11_STL
+			return std::nextafter(x, std::numeric_limits<double>::max());
+#		elif((GLM_COMPILER & GLM_COMPILER_VC) || ((GLM_COMPILER & GLM_COMPILER_INTEL) && (GLM_PLATFORM & GLM_PLATFORM_WINDOWS)))
+			return detail::nextafter(x, std::numeric_limits<double>::max());
+#		elif(GLM_PLATFORM & GLM_PLATFORM_ANDROID)
+			return __builtin_nextafter(x, DBL_MAX);
+#		else
+			return nextafter(x, DBL_MAX);
+#		endif
 	}
 
 	template<typename T>
 	GLM_FUNC_QUALIFIER T nextFloat(T x, int ULPs)
 	{
-		static_assert(std::numeric_limits<T>::is_iec559 || GLM_CONFIG_UNRESTRICTED_FLOAT, "'nextFloat' only accept floating-point input");
+		GLM_STATIC_ASSERT(std::numeric_limits<T>::is_iec559, "'next_float' only accept floating-point input");
 		assert(ULPs >= 0);
 
 		T temp = x;
@@ -221,18 +230,34 @@ namespace glm
 
 	GLM_FUNC_QUALIFIER float prevFloat(float x)
 	{
-		return std::nextafter(x, std::numeric_limits<float>::min());
+#		if GLM_HAS_CXX11_STL
+			return std::nextafter(x, std::numeric_limits<float>::min());
+#		elif((GLM_COMPILER & GLM_COMPILER_VC) || ((GLM_COMPILER & GLM_COMPILER_INTEL) && (GLM_PLATFORM & GLM_PLATFORM_WINDOWS)))
+			return detail::nextafterf(x, FLT_MIN);
+#		elif(GLM_PLATFORM & GLM_PLATFORM_ANDROID)
+			return __builtin_nextafterf(x, FLT_MIN);
+#		else
+			return nextafterf(x, FLT_MIN);
+#		endif
 	}
 
 	GLM_FUNC_QUALIFIER double prevFloat(double x)
 	{
-		return std::nextafter(x, std::numeric_limits<double>::min());
+#		if GLM_HAS_CXX11_STL
+			return std::nextafter(x, std::numeric_limits<double>::min());
+#		elif((GLM_COMPILER & GLM_COMPILER_VC) || ((GLM_COMPILER & GLM_COMPILER_INTEL) && (GLM_PLATFORM & GLM_PLATFORM_WINDOWS)))
+			return _nextafter(x, DBL_MIN);
+#		elif(GLM_PLATFORM & GLM_PLATFORM_ANDROID)
+			return __builtin_nextafter(x, DBL_MIN);
+#		else
+			return nextafter(x, DBL_MIN);
+#		endif
 	}
 
 	template<typename T>
 	GLM_FUNC_QUALIFIER T prevFloat(T x, int ULPs)
 	{
-		static_assert(std::numeric_limits<T>::is_iec559 || GLM_CONFIG_UNRESTRICTED_FLOAT, "'prevFloat' only accept floating-point input");
+		GLM_STATIC_ASSERT(std::numeric_limits<T>::is_iec559, "'prev_float' only accept floating-point input");
 		assert(ULPs >= 0);
 
 		T temp = x;

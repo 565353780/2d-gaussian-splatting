@@ -5,20 +5,22 @@
 #include <glm/gtc/epsilon.hpp>
 #include <glm/gtx/euler_angles.hpp>
 #include <glm/vector_relational.hpp>
-#include <type_traits>
+#if GLM_HAS_TRIVIAL_QUERIES
+#	include <type_traits>
+#endif
 
-static int myrand()
+int myrand()
 {
 	static int holdrand = 1;
 	return (((holdrand = holdrand * 214013L + 2531011L) >> 16) & 0x7fff);
 }
 
-static float myfrand() // returns values from -1 to 1 inclusive
+float myfrand() // returns values from -1 to 1 inclusive
 {
 	return float(double(myrand()) / double( 0x7ffff )) * 2.0f - 1.0f;
 }
 
-static int test_dquat_type()
+int test_dquat_type()
 {
 	glm::dvec3 vA;
 	glm::dquat dqA, dqB;
@@ -28,7 +30,7 @@ static int test_dquat_type()
 	return 0;
 }
 
-static int test_scalars()
+int test_scalars()
 {
 	float const Epsilon = 0.0001f;
 
@@ -60,7 +62,7 @@ static int test_scalars()
 	return Error;
 }
 
-static int test_inverse()
+int test_inverse() 
 {
 	int Error(0);
 
@@ -100,7 +102,7 @@ static int test_inverse()
 	return Error;
 }
 
-static int test_mul()
+int test_mul() 
 {
 	int Error(0);
 
@@ -155,11 +157,11 @@ static int test_mul()
 	return Error;
 }
 
-static int test_dual_quat_ctr()
+int test_dual_quat_ctr()
 {
 	int Error(0);
 
-	{
+#	if GLM_HAS_TRIVIAL_QUERIES
 	//	Error += std::is_trivially_default_constructible<glm::dualquat>::value ? 0 : 1;
 	//	Error += std::is_trivially_default_constructible<glm::ddualquat>::value ? 0 : 1;
 	//	Error += std::is_trivially_copy_assignable<glm::dualquat>::value ? 0 : 1;
@@ -169,12 +171,12 @@ static int test_dual_quat_ctr()
 
 		Error += std::is_copy_constructible<glm::dualquat>::value ? 0 : 1;
 		Error += std::is_copy_constructible<glm::ddualquat>::value ? 0 : 1;
-	}
-	
+#	endif
+
 	return Error;
 }
 
-static int test_size()
+int test_size()
 {
 	int Error = 0;
 

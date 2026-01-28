@@ -46,7 +46,7 @@ if __name__ == "__main__":
     args = parser.parse_args(sys.argv[1:])
     print("View: " + args.model_path)
     network_gui.init(args.ip, args.port)
-
+    
     view(lp.extract(args), pp.extract(args), args.iteration)
 
     print("\nViewing complete.")

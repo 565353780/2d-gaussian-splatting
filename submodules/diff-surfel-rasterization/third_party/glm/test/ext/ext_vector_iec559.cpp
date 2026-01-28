@@ -101,7 +101,9 @@ static int test_relational()
 template <typename genType>
 static int test_constexpr()
 {
-	static_assert(genType::length() == 1, "GLM: Failed constexpr");
+#	if GLM_CONFIG_CONSTEXP == GLM_ENABLE
+		static_assert(genType::length() == 1, "GLM: Failed constexpr");
+#	endif
 
 	return 0;
 }
