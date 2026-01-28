@@ -9,13 +9,15 @@ from twod_gs.Loss.l1 import l1_loss
 
 
 def sampling_cameras(my_viewpoint_stack):
-    ''' Randomly sample a given number of cameras from the viewpoint stack'''
+    ''' Randomly sample a given number of unique cameras from the viewpoint stack without removing them.'''
 
     num_cams = 10
-    camlist = []
-    for _ in range(num_cams):
-        loc = random.randint(0, len(my_viewpoint_stack) - 1)
-        camlist.append(my_viewpoint_stack.pop(loc))
+    # Randomly select num_cams unique indices without replacement
+    if len(my_viewpoint_stack) < num_cams:
+        return my_viewpoint_stack
+
+    indices = random.sample(range(len(my_viewpoint_stack)), num_cams)
+    camlist = [my_viewpoint_stack[i] for i in indices]
 
     return camlist
 
