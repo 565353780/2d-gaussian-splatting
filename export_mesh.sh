@@ -9,7 +9,7 @@ DATA_PATH="${HOME}/chLi/Dataset/pixel_align/${SHAPE_ID}"
 DATA_PATH="${HOME}/chLi/Dataset/GS/haizei_1_v4"
 
 GPU=0
-ITERATIONS=10000
+ITERATIONS=8500
 
 CUDA_VISIBLE_DEVICES=${GPU} \
   python render.py \
