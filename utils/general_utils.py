@@ -9,11 +9,12 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
-import torch
 import sys
-from datetime import datetime
-import numpy as np
+import torch
 import random
+import numpy as np
+import matplotlib.pyplot as plt
+from datetime import datetime
 
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
@@ -161,7 +162,6 @@ def create_rotation_matrix_from_direction_vector_batch(direction_vectors):
 
 
 def colormap(img, cmap='jet'):
-    import matplotlib.pyplot as plt
     W, H = img.shape[:2]
     dpi = 300
     fig, ax = plt.subplots(1, figsize=(H/dpi, W/dpi), dpi=dpi)
@@ -170,8 +170,9 @@ def colormap(img, cmap='jet'):
     fig.colorbar(im, ax=ax)
     fig.tight_layout()
     fig.canvas.draw()
-    data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    # Use buffer_rgba for compatibility with newer matplotlib versions
+    data = np.asarray(fig.canvas.buffer_rgba())
+    data = data[..., :3]  # drop alpha channel
     img = torch.from_numpy(data / 255.).float().permute(2,0,1)
     plt.close()
     return img
