@@ -9,19 +9,7 @@ DATA_PATH="${HOME}/chLi/Dataset/pixel_align/${SHAPE_ID}"
 DATA_PATH="${HOME}/chLi/Dataset/GS/haizei_1_v4"
 
 GPU=0
-ITERATIONS=3000
-
-CUDA_VISIBLE_DEVICES=${GPU} \
-  python train.py \
-  -s ${DATA_PATH}/gs \
-  --images masked_images \
-  -m ${DATA_PATH}/2dgs \
-  -r 1 \
-  --iterations ${ITERATIONS} \
-  --test_iterations 1000 2000 \
-  --save_iterations 1000 2000
-
-exit
+ITERATIONS=30000
 
 CUDA_VISIBLE_DEVICES=${GPU} \
   python render.py \

@@ -81,9 +81,9 @@ class Trainer(object):
         viewpoint_cam,
         lambda_dssim: float = 0.2,
         lambda_normal: float = 0.01,
-        lambda_dist: float = 100000.0,
-        lambda_opacity: float = 0.001,
-        lambda_scaling: float = 0.001,
+        lambda_dist: float = 0.0,
+        lambda_opacity: float = 0.01,
+        lambda_scaling: float = 0.01,
         maximum_opacity: bool = False,
     ) -> Tuple[dict, dict]:
         self.gaussians.update_learning_rate(iteration)
@@ -233,8 +233,8 @@ class Trainer(object):
         return True
 
     @torch.no_grad()
-    def densifyStep(self, iteration: int) -> bool:
-        size_threshold = 20 if iteration > self.opt.opacity_reset_interval else None
+    def densifyStep(self) -> bool:
+        size_threshold = 20
         self.gaussians.densify_and_prune(self.opt.densify_grad_threshold, self.opt.opacity_cull, self.scene.cameras_extent, size_threshold)
         return True
 
