@@ -1,25 +1,18 @@
-#
-# Copyright (C) 2023, Inria
-# GRAPHDECO research group, https://team.inria.fr/graphdeco
-# All rights reserved.
-#
-# This software is free for non-commercial, research and evaluation use 
-# under the terms of the LICENSE.md file.
-#
-# For inquiries contact  george.drettakis@inria.fr
-#
-
+import os
 import torch
 import numpy as np
-from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
+
 from torch import nn
-import os
-from utils.system_utils import mkdir_p
 from plyfile import PlyData, PlyElement
-from utils.sh_utils import RGB2SH
+
 from simple_knn._C import distCUDA2
+
+from utils.sh_utils import RGB2SH
+from utils.system_utils import mkdir_p
 from utils.graphics_utils import BasicPointCloud
-from utils.general_utils import strip_symmetric, build_scaling_rotation
+from utils.general_utils import build_scaling_rotation
+from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
+
 
 class GaussianModel:
 
@@ -31,7 +24,7 @@ class GaussianModel:
             trans[:, 3,:3] = center
             trans[:, 3, 3] = 1
             return trans
-        
+
         self.scaling_activation = torch.exp
         self.scaling_inverse_activation = torch.log
 
