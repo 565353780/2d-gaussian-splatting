@@ -26,8 +26,7 @@ class Scene:
                 self.loaded_iter = load_iteration
             print("Loading trained model at iteration {}".format(self.loaded_iter))
 
-        self.train_cameras = {}
-        self.test_cameras = {}
+        self.cameras = {}
 
         scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images)
 
@@ -36,27 +35,21 @@ class Scene:
                 dest_file.write(src_file.read())
             json_cams = []
             camlist = []
-            if scene_info.test_cameras:
-                camlist.extend(scene_info.test_cameras)
-            if scene_info.train_cameras:
-                camlist.extend(scene_info.train_cameras)
+            camlist.extend(scene_info.cameras)
             for id, cam in enumerate(camlist):
                 json_cams.append(camera_to_JSON(id, cam))
             with open(os.path.join(self.model_path, "cameras.json"), 'w') as file:
                 json.dump(json_cams, file)
 
         if shuffle:
-            random.shuffle(scene_info.train_cameras)  # Multi-res consistent random shuffling
-            random.shuffle(scene_info.test_cameras)  # Multi-res consistent random shuffling
+            random.shuffle(scene_info.cameras)  # Multi-res consistent random shuffling
 
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
         for resolution_scale in resolution_scales:
             print("Loading Training Cameras")
-            self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args)
-            print("Loading Test Cameras")
-            self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
-        
+            self.cameras[resolution_scale] = cameraList_from_camInfos(scene_info.cameras, resolution_scale, args)
+
         if self.loaded_iter:
             self.gaussians.load_ply(os.path.join(self.model_path,
                                                            "point_cloud",
@@ -70,7 +63,4 @@ class Scene:
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
 
     def getTrainCameras(self, scale=1.0):
-        return self.train_cameras[scale]
-
-    def getTestCameras(self, scale=1.0):
-        return self.test_cameras[scale]
+        return self.cameras[scale]

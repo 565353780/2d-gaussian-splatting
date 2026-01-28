@@ -2,7 +2,7 @@ import os
 import torch
 from torch import nn
 from tqdm import tqdm
-from typing import Tuple, Union
+from typing import Tuple
 
 from utils.image_utils import psnr
 from gaussian_renderer import render
@@ -64,6 +64,8 @@ class Trainer(object):
         BaseTrainer.initRecords(self)
         self.createDatasets()
         self.createModel()
+
+        self.iteration = 0
         return
 
     def createDatasets(self) -> bool:
@@ -86,8 +88,7 @@ class Trainer(object):
             self.opt.lambda_dssim,
             self.opt.lambda_normal,
             self.opt.lambda_dist,
-            0.001, 0.1,
-            0, False, None
+            0.001, 0.1, False,
         )
 
     def trainStepWithSuperParams(self,
@@ -98,9 +99,7 @@ class Trainer(object):
                                  lambda_dist: float = 100000.0,
                                  lambda_opacity: float = 0.001,
                                  lambda_scaling: float = 0.001,
-                                 lambda_surface: float = 0.001,
                                  maximum_opacity: bool = False,
-                                 surface_points: Union[torch.Tensor, None]=None,
                                  ) -> Tuple[dict, dict]:
         self.gaussians.update_learning_rate(iteration)
 
@@ -147,16 +146,8 @@ class Trainer(object):
         if lambda_scaling > 0:
             scaling_loss = lambda_scaling * nn.MSELoss()(self.gaussians.get_scaling, torch.zeros_like(self.gaussians._scaling))
 
-        surface_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
-        if lambda_surface > 0:
-            if surface_points is not None:
-                fit_loss, coverage_loss = mash_cpp.toChamferDistanceLoss(
-                    self.gaussians.get_xyz, surface_points
-                )
-                surface_loss = lambda_surface * (fit_loss + coverage_loss)
-
         # loss
-        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss + surface_loss
+        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss
 
         total_loss.backward()
 
@@ -168,7 +159,6 @@ class Trainer(object):
             'normal': normal_loss.item(),
             'opacity': opacity_loss.item(),
             'scaling': scaling_loss.item(),
-            'surface': surface_loss.item(),
             'total': total_loss.item(),
         }
 
@@ -183,7 +173,6 @@ class Trainer(object):
         normal_loss = loss_dict['normal']
         opacity_loss = loss_dict['opacity']
         scaling_loss = loss_dict['scaling']
-        surface_loss = loss_dict['surface']
         total_loss = loss_dict['total']
 
         # Log and save
@@ -194,7 +183,6 @@ class Trainer(object):
         self.logger.addScalar('Loss/normal', normal_loss, iteration)
         self.logger.addScalar('Loss/opacity', opacity_loss, iteration)
         self.logger.addScalar('Loss/scaling', scaling_loss, iteration)
-        self.logger.addScalar('Loss/surface', surface_loss, iteration)
         self.logger.addScalar('Loss/total', total_loss, iteration)
 
         self.logger.addScalar('Gaussian/total_points', self.gaussians.get_xyz.shape[0], iteration)
@@ -204,7 +192,7 @@ class Trainer(object):
         # Report test and samples of training set
         if iteration % self.test_freq == 0:
             torch.cuda.empty_cache()
-            config = {'name': 'train', 'cameras' : [idx % len(self.scene) for idx in range(5, 30, 5)]}
+            config = {'name': 'train', 'cameras' : [self.scene[idx % len(self.scene)] for idx in range(5, 30, 5)]}
             if config['cameras'] and len(config['cameras']) > 0:
                 l1_test = 0.0
                 psnr_test = 0.0
@@ -258,7 +246,8 @@ class Trainer(object):
         return True
 
     def densifyStep(self) -> bool:
-        size_threshold = 20
+        # Match train.py: only apply size threshold after first opacity reset window
+        size_threshold = 20 if self.iteration > self.opt.opacity_reset_interval else None
         self.gaussians.densify_and_prune(self.opt.densify_grad_threshold, self.opt.opacity_cull, self.scene.cameras_extent, size_threshold)
         return True
 
@@ -282,6 +271,7 @@ class Trainer(object):
         iteration = 0
         while True:
             iteration += 1
+            self.iteration = iteration
 
             # Pick a random Camera
             viewpoint_cam = self.scene[iteration]
@@ -321,9 +311,10 @@ class Trainer(object):
 
         progress_bar = tqdm(desc="Training progress", total=iteration_num)
         iteration = 1
-        for i in range(iteration_num):
+        for _ in range(iteration_num):
+            self.iteration = iteration
             # Pick a random Camera
-            viewpoint_cam = self.scene[i]
+            viewpoint_cam = self.scene[iteration]
 
             render_pkg, loss_dict = self.trainStep(iteration, viewpoint_cam)
 

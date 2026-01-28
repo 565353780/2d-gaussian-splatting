@@ -1,14 +1,3 @@
-#
-# Copyright (C) 2023, Inria
-# GRAPHDECO research group, https://team.inria.fr/graphdeco
-# All rights reserved.
-#
-# This software is free for non-commercial, research and evaluation use 
-# under the terms of the LICENSE.md file.
-#
-# For inquiries contact  george.drettakis@inria.fr
-#
-
 import os
 import torch
 from random import randint
@@ -22,11 +11,7 @@ from tqdm import tqdm
 from utils.image_utils import psnr, render_net_image
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
-try:
-    from torch.utils.tensorboard import SummaryWriter
-    TENSORBOARD_FOUND = True
-except ImportError:
-    TENSORBOARD_FOUND = False
+from torch.utils.tensorboard import SummaryWriter
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint):
     first_iter = 0
