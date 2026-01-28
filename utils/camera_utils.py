@@ -9,8 +9,9 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
-from scene.cameras import Camera
+import torch
 import numpy as np
+from scene.cameras import Camera
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
 
@@ -39,7 +40,6 @@ def loadCam(args, id, cam_info, resolution_scale):
         resolution = (int(orig_w / scale), int(orig_h / scale))
 
     if len(cam_info.image.split()) > 3:
-        import torch
         resized_image_rgb = torch.cat([PILtoTorch(im, resolution) for im in cam_info.image.split()[:3]], dim=0)
         loaded_mask = PILtoTorch(cam_info.image.split()[3], resolution)
         gt_image = resized_image_rgb

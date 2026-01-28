@@ -34,6 +34,7 @@ class Trainer(object):
         # Set up command line argument parser
         parser = ArgumentParser(description="Training script parameters")
         lp = ModelParams(parser)
+        lp._images = 'masked_images'
         op = OptimizationParams(parser)
         pp = PipelineParams(parser)
         args = parser.parse_args()
@@ -199,9 +200,6 @@ class Trainer(object):
         self.logger.addScalar('Gaussian/total_points', self.gaussians.get_xyz.shape[0], iteration)
         self.logger.addScalar('Gaussian/scale', torch.mean(self.gaussians.get_scaling).detach().clone().cpu().numpy(), iteration)
         self.logger.addScalar('Gaussian/opacity', torch.mean(self.gaussians.get_opacity).detach().clone().cpu().numpy(), iteration)
-        self.logger.addScalar('Gaussian/split_num', self.gaussians.split_pts_num, iteration)
-        self.logger.addScalar('Gaussian/clone_num', self.gaussians.clone_pts_num, iteration)
-        self.logger.addScalar('Gaussian/prune_num', self.gaussians.prune_pts_num, iteration)
 
         # Report test and samples of training set
         if iteration % self.test_freq == 0:

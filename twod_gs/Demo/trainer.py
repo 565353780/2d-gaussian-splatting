@@ -2,8 +2,9 @@ import sys
 sys.path.append('../base-trainer')
 
 import os
-os.environ['CUDA_VISIBLE_DEVICES']='3'
+os.environ['CUDA_VISIBLE_DEVICES']='0'
 
+from twod_gs.Method.time import getCurrentTime
 from twod_gs.Module.trainer import Trainer
 
 
@@ -16,9 +17,9 @@ def demo():
 
     trainer = Trainer(
         source_path=source_path,
-        save_log_folder_path=save_result_folder_path + 'log/',
-        save_result_folder_path=save_result_folder_path + 'results/',
+        save_log_folder_path=save_result_folder_path + 'logs/' + getCurrentTime() + '/',
+        save_result_folder_path=save_result_folder_path + 'results/' + getCurrentTime() + '/',
     )
     trainer.train(35000)
-    trainer.convertToMesh(conda_env_name, 35000)
+    # trainer.convertToMesh(35000)
     return True
