@@ -12,14 +12,13 @@ def demo():
     data_id = 'haizei_1_v4'
 
     home = os.environ['HOME']
-    source_path = home + '/chLi/Dataset/GS/' + data_id + '/gs/'
+    colmap_data_folder_path = home + '/chLi/Dataset/GS/' + data_id + '/gs/'
     save_result_folder_path = home + '/chLi/Dataset/GS/' + data_id + '/2dgs/'
 
     trainer = Trainer(
-        source_path=source_path,
+        colmap_data_folder_path=colmap_data_folder_path,
         save_log_folder_path=save_result_folder_path + 'logs/' + getCurrentTime() + '/',
         save_result_folder_path=save_result_folder_path + 'results/' + getCurrentTime() + '/',
     )
-    trainer.train(35000)
-    # trainer.convertToMesh(35000)
+    trainer.train(30000)
     return True

@@ -1,91 +1,106 @@
 import os
-import sys
 import torch
 from torch import nn
 from tqdm import tqdm
 from typing import Tuple
 
+from utils.image_utils import psnr
 from gaussian_renderer import render
 from utils.general_utils import safe_state
-from argparse import ArgumentParser
+from utils.loss_utils import l1_loss, ssim
+from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 
 from base_trainer.Module.logger import Logger
 from base_trainer.Module.base_trainer import BaseTrainer
 
-from twod_gs.Loss.l1 import l1_loss
-from twod_gs.Loss.ssim import ssim
-from twod_gs.Metric.psnr import psnr
 from twod_gs.Dataset.scene import Scene
 from twod_gs.Method.cmd import runCMD
 from twod_gs.Model.gs import GaussianModel
 
-
 class Trainer(object):
     def __init__(
         self,
-        colmap_data_folder_path: str='',
+        source_path: str='',
         save_result_folder_path: str='./output/',
         save_log_folder_path: str='./logs/',
     ) -> None:
         self.save_result_folder_path = save_result_folder_path
         self.save_log_folder_path = save_log_folder_path
 
-        self.test_freq = 500
-        self.save_freq = 500
+        self.test_freq = 5000
+        self.save_freq = 5000
 
         # Set up command line argument parser
         parser = ArgumentParser(description="Training script parameters")
         lp = ModelParams(parser)
+        lp._images = 'masked_images'
         op = OptimizationParams(parser)
         pp = PipelineParams(parser)
-        args = parser.parse_args(sys.argv[1:])
+        args = parser.parse_args()
 
-        args.source_path = colmap_data_folder_path
-        args.images = 'masked_images'
-        args.white_background = True
-        args.resolution = 2
+        args.source_path = source_path
+        args.resolution = 1
         args.model_path = save_result_folder_path
 
         print("Optimizing " + args.model_path)
-
-        # Initialize system state (RNG)
-        safe_state(silent=False)
-
-        torch.autograd.set_detect_anomaly(False)
-
         os.makedirs(args.model_path, exist_ok=True)
+        with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
+            cfg_log_f.write(str(Namespace(**vars(args))))
 
         self.dataset = lp.extract(args)
         self.opt = op.extract(args)
         self.pipe = pp.extract(args)
 
-        self.gaussians = GaussianModel(self.dataset.sh_degree)
-        self.scene = Scene(self.dataset, self.gaussians)
-        self.gaussians.training_setup(self.opt)
+        safe_state(silent=False)
 
         bg_color = [1, 1, 1] if self.dataset.white_background else [0, 0, 0]
         self.background = torch.tensor(bg_color, dtype=torch.float32, device='cuda')
 
         self.logger = Logger()
+        self.scene: Scene
+        self.gaussians: GaussianModel
 
         BaseTrainer.initRecords(self)
+        self.createDatasets()
+        self.createModel()
+
+        self.iteration = 0
         return
 
-    def renderImage(self, viewpoint_cam) -> dict:
-        return render(viewpoint_cam, self.gaussians, self.pipe, self.background)
+    def createDatasets(self) -> bool:
+        self.scene = Scene(self.dataset)
+        return True
 
-    def trainStep(
-        self,
-        iteration: int,
-        viewpoint_cam,
-        lambda_dssim: float = 0.2,
-        lambda_normal: float = 0.01,
-        lambda_dist: float = 100000.0,
-        lambda_opacity: float = 0.001,
-        lambda_scaling: float = 0.001,
-        maximum_opacity: bool = False,
-    ) -> Tuple[dict, dict]:
+    def createModel(self) -> bool:
+        self.gaussians = GaussianModel(self.dataset.sh_degree)
+        self.gaussians.training_setup(self.opt)
+
+        self.gaussians.create_from_pcd(self.scene.scene_info.point_cloud, self.scene.cameras_extent)
+        return True
+
+    def renderImage(self, viewpoint_cam, scaling_modifer: float = 1.0) -> dict:
+        return render(viewpoint_cam, self.gaussians, self.pipe, self.background, scaling_modifer)
+
+    def trainStep(self, iteration: int, viewpoint_cam) -> Tuple[dict, dict]:
+        return self.trainStepWithSuperParams(
+            iteration, viewpoint_cam,
+            self.opt.lambda_dssim,
+            self.opt.lambda_normal,
+            self.opt.lambda_dist,
+            0.001, 0.1, False,
+        )
+
+    def trainStepWithSuperParams(self,
+                                 iteration: int,
+                                 viewpoint_cam,
+                                 lambda_dssim: float = 0.2,
+                                 lambda_normal: float = 0.01,
+                                 lambda_dist: float = 100000.0,
+                                 lambda_opacity: float = 0.001,
+                                 lambda_scaling: float = 0.001,
+                                 maximum_opacity: bool = False,
+                                 ) -> Tuple[dict, dict]:
         self.gaussians.update_learning_rate(iteration)
 
         if iteration % 1000 == 0:
@@ -105,15 +120,14 @@ class Trainer(object):
             rend_normal  = render_pkg['rend_normal']
             surf_normal = render_pkg['surf_normal']
             normal_dot = torch.sum(rend_normal * surf_normal, dim=0)
-
             valid_dot_idxs = torch.where(normal_dot != 0)
-            valid_normal_dot = normal_dot[valid_dot_idxs]
-
+            valid_normal_dot = torch.abs(normal_dot[valid_dot_idxs])
             normal_error = (1 - valid_normal_dot)
             normal_loss = lambda_normal * normal_error.mean()
 
         lambda_dist = lambda_dist if iteration > 3000 else 0.0
         #FIXME: seems this dist not work
+        lambda_dist = 0.0
         dist_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
         if lambda_dist > 0:
             rend_dist = render_pkg["rend_dist"]
@@ -224,7 +238,6 @@ class Trainer(object):
             torch.cuda.empty_cache()
         return True
 
-    @torch.no_grad()
     def recordGrads(self, render_pkg: dict) -> bool:
         viewspace_point_tensor, visibility_filter, radii = render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
@@ -232,33 +245,35 @@ class Trainer(object):
         self.gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
         return True
 
-    @torch.no_grad()
-    def densifyStep(self, iteration: int) -> bool:
-        size_threshold = 20 if iteration > self.opt.opacity_reset_interval else None
+    def densifyStep(self) -> bool:
+        # Match train.py: only apply size threshold after first opacity reset window
+        size_threshold = 20 if self.iteration > self.opt.opacity_reset_interval else None
         self.gaussians.densify_and_prune(self.opt.densify_grad_threshold, self.opt.opacity_cull, self.scene.cameras_extent, size_threshold)
         return True
 
-    @torch.no_grad()
     def resetOpacity(self) -> bool:
         self.gaussians.reset_opacity()
         return True
 
-    @torch.no_grad()
     def updateGSParams(self) -> bool:
         self.gaussians.optimizer.step()
         self.gaussians.optimizer.zero_grad(set_to_none = True)
+        # self.gaussians.checkNan()
         return True
 
-    @torch.no_grad()
-    def saveScene(self, iteration: int) -> bool:
-        point_cloud_path = os.path.join(self.dataset.model_path, "point_cloud/iteration_{}".format(iteration))
+    def saveScene(self, iteration: int) -> str:
+        point_cloud_path = os.path.join(self.scene.model_path, "point_cloud/iteration_{}".format(iteration))
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
-        return True
+        return point_cloud_path
 
-    def train(self, iteration_num: int = 30000):
-        progress_bar = tqdm(desc="Training progress", total=iteration_num)
-        iteration = 1
-        for _ in range(iteration_num):
+    def trainForever(self) -> bool:
+        progress_bar = tqdm(desc="Training forever progress")
+        iteration = 0
+        while True:
+            iteration += 1
+            self.iteration = iteration
+
+            # Pick a random Camera
             viewpoint_cam = self.scene[iteration]
 
             render_pkg, loss_dict = self.trainStep(iteration, viewpoint_cam)
@@ -283,7 +298,47 @@ class Trainer(object):
             if iteration < self.opt.densify_until_iter:
                 self.recordGrads(render_pkg)
                 if iteration > self.opt.densify_from_iter and iteration % self.opt.densification_interval == 0:
-                    self.densifyStep(iteration)
+                    self.densifyStep()
+
+                if iteration % self.opt.opacity_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
+                    self.resetOpacity()
+
+            self.updateGSParams()
+
+    def train(self, iteration_num: int = -1):
+        if iteration_num < 0:
+            return self.trainForever()
+
+        progress_bar = tqdm(desc="Training progress", total=iteration_num)
+        iteration = 1
+        for _ in range(iteration_num):
+            self.iteration = iteration
+            # Pick a random Camera
+            viewpoint_cam = self.scene[iteration]
+
+            render_pkg, loss_dict = self.trainStep(iteration, viewpoint_cam)
+
+            if iteration % 10 == 0:
+                bar_loss_dict = {
+                    "rgb": f"{loss_dict['rgb']:.{5}f}",
+                    "distort": f"{loss_dict['dist']:.{5}f}",
+                    "normal": f"{loss_dict['normal']:.{5}f}",
+                    "Points": f"{len(self.gaussians.get_xyz)}"
+                }
+                progress_bar.set_postfix(bar_loss_dict)
+                progress_bar.update(10)
+
+            self.logStep(iteration, loss_dict)
+
+            if iteration % self.save_freq == 0:
+                print("\n[ITER {}] Saving Gaussians".format(iteration))
+                self.saveScene(iteration)
+
+            # Densification
+            if iteration < self.opt.densify_until_iter:
+                self.recordGrads(render_pkg)
+                if iteration > self.opt.densify_from_iter and iteration % self.opt.densification_interval == 0:
+                    self.densifyStep()
 
                 if iteration % self.opt.opacity_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
                     self.resetOpacity()

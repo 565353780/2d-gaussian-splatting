@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import NamedTuple
 from plyfile import PlyData, PlyElement
 
-from scene.gaussian_model import BasicPointCloud
+from utils.graphics_utils import BasicPointCloud
 from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
 from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
     read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text

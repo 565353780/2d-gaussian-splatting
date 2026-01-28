@@ -1,15 +1,17 @@
 import os
 import torch
 import numpy as np
+
 from torch import nn
-from simple_knn._C import distCUDA2
 from plyfile import PlyData, PlyElement
+
+from simple_knn._C import distCUDA2
 
 from utils.sh_utils import RGB2SH
 from utils.system_utils import mkdir_p
 from utils.graphics_utils import BasicPointCloud
-from utils.general_utils import build_scaling_rotation, build_rotation
-from utils.general_utils import inverse_sigmoid, get_expon_lr_func
+from utils.general_utils import build_scaling_rotation
+from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
 
 
 class GaussianModel:
@@ -367,7 +369,7 @@ class GaussianModel:
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
-
+        
         new_xyz = self._xyz[selected_pts_mask]
         new_features_dc = self._features_dc[selected_pts_mask]
         new_features_rest = self._features_rest[selected_pts_mask]
@@ -394,29 +396,5 @@ class GaussianModel:
         torch.cuda.empty_cache()
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
-        # Check if gradient exists and has correct shape
-        if viewspace_point_tensor.grad is not None and viewspace_point_tensor.grad.numel() > 0:
-            # Ensure the gradient shape matches the filter
-            grad_shape = viewspace_point_tensor.grad.shape
-            filter_shape = update_filter.shape
-            num_points = grad_shape[0]
-            
-            # Auto-resize xyz_gradient_accum and denom if shape doesn't match
-            if self.xyz_gradient_accum.shape[0] != num_points:
-                self.xyz_gradient_accum = torch.zeros((num_points, 1), device="cuda")
-                self.denom = torch.zeros((num_points, 1), device="cuda")
-            
-            # Ensure filter shape matches
-            if filter_shape[0] == num_points:
-                # Only update points that are both visible and have valid gradients
-                valid_filter = update_filter & (torch.isfinite(viewspace_point_tensor.grad).all(dim=-1))
-                if valid_filter.any():
-                    grad_norm = torch.norm(viewspace_point_tensor.grad[valid_filter], dim=-1, keepdim=True)
-                    self.xyz_gradient_accum[valid_filter] += grad_norm
-                    self.denom[valid_filter] += 1
-            else:
-                # If filter shape doesn't match, skip this update
-                print(f"Warning: Filter shape {filter_shape} doesn't match gradient shape {grad_shape}, skipping densification stats update")
-        else:
-            # If gradient is None or empty, skip this update silently
-            pass
+        self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter], dim=-1, keepdim=True)
+        self.denom[update_filter] += 1
