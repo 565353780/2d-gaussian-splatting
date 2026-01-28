@@ -1,12 +1,16 @@
 import os
 import sys
 import torch
+import open3d as o3d
+
 from torch import nn
 from tqdm import tqdm
 from typing import Tuple
+from copy import deepcopy
 
 from gaussian_renderer import render
 from utils.general_utils import safe_state
+from utils.mesh_utils import GaussianExtractor, post_process_mesh
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, OptimizationParams
 
@@ -17,7 +21,6 @@ from twod_gs.Loss.l1 import l1_loss
 from twod_gs.Loss.ssim import ssim
 from twod_gs.Metric.psnr import psnr
 from twod_gs.Dataset.scene import Scene
-from twod_gs.Method.cmd import runCMD
 from twod_gs.Model.gs import GaussianModel
 
 
@@ -44,7 +47,7 @@ class Trainer(object):
         args.source_path = colmap_data_folder_path
         args.images = 'masked_images'
         args.white_background = True
-        args.resolution = 2
+        args.resolution = 1
         args.model_path = save_result_folder_path
 
         print("Optimizing " + args.model_path)
@@ -81,7 +84,7 @@ class Trainer(object):
         viewpoint_cam,
         lambda_dssim: float = 0.2,
         lambda_normal: float = 0.01,
-        lambda_dist: float = 0.0,
+        lambda_dist: float = 0.01,
         lambda_opacity: float = 0.01,
         lambda_scaling: float = 0.01,
         maximum_opacity: bool = False,
@@ -99,7 +102,7 @@ class Trainer(object):
         ssim_loss = 1.0 - ssim(image, gt_image)
         rgb_loss = (1.0 - lambda_dssim) * reg_loss + lambda_dssim * ssim_loss
 
-        lambda_normal = lambda_normal if iteration > 7000 else 0.0
+        lambda_normal = lambda_normal if iteration > 1000 else 0.0
         normal_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
         if lambda_normal > 0:
             rend_normal  = render_pkg['rend_normal']
@@ -112,7 +115,7 @@ class Trainer(object):
             normal_error = (1 - valid_normal_dot)
             normal_loss = lambda_normal * normal_error.mean()
 
-        lambda_dist = lambda_dist if iteration > 3000 else 0.0
+        lambda_dist = lambda_dist if iteration > 1000 else 0.0
         #FIXME: seems this dist not work
         dist_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
         if lambda_dist > 0:
@@ -244,6 +247,11 @@ class Trainer(object):
         return True
 
     @torch.no_grad()
+    def resetScaling(self) -> bool:
+        self.gaussians.reset_scaling()
+        return True
+
+    @torch.no_grad()
     def updateGSParams(self) -> bool:
         self.gaussians.optimizer.step()
         self.gaussians.optimizer.zero_grad(set_to_none = True)
@@ -283,37 +291,51 @@ class Trainer(object):
             if iteration < self.opt.densify_until_iter:
                 self.recordGrads(render_pkg)
                 if iteration > self.opt.densify_from_iter and iteration % self.opt.densification_interval == 0:
-                    self.densifyStep(iteration)
+                    self.densifyStep()
 
                 if iteration % self.opt.opacity_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
                     self.resetOpacity()
 
+                if iteration % self.opt.scaling_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
+                    self.resetScaling()
+
             self.updateGSParams()
 
             iteration += 1
+            self.iteration = iteration
         return True
 
-    def convertToMesh(self, conda_env_name: str, iteration: int) -> bool:
-        saved_result_folder_path = self.save_result_folder_path + 'point_cloud/iteration_' + str(iteration) + '/'
-        if not os.path.exists(saved_result_folder_path):
-            print('[ERROR][Trainer::convertToMesh]')
-            print('\t saved result not found!')
-            print('\t saved_result_folder_path :', saved_result_folder_path)
-            return False
+    def exportMesh(
+        self,
+        voxel_size: float = -1.0,
+        depth_trunc: float = -1.0,
+        sdf_trunc: float = -1.0,
+        num_cluster: int = 1,
+    ) -> bool:
+        export_scene = deepcopy(self.scene)
+        export_gaussians = export_scene.gaussians
 
-        command = 'conda run -n ' + conda_env_name + ' python render.py' + \
-            ' -s ' + self.dataset.source_path + \
-            ' -m ' + self.save_result_folder_path + \
-            ' --num_cluster 1' + \
-            ' --iteration ' + str(iteration)
+        train_dir = os.path.join(self.dataset.model_path, 'mesh', 'iter_' + str(self.iteration))
+        gaussExtractor = GaussianExtractor(export_gaussians, render, self.pipe, bg_color=self.background.cpu().numpy())
 
-        os.system(command)
-        return True
+        print('[INFO][Trainer::exportMesh]')
+        print("\t start export mesh...")
+        os.makedirs(train_dir, exist_ok=True)
+        # set the active_sh to 0 to export only diffuse texture
+        gaussExtractor.gaussians.active_sh_degree = 0
+        gaussExtractor.reconstruction(export_scene.train_cameras)
 
-        if not runCMD(command):
-            print('[ERROR][Trainer::convertToMesh]')
-            print('\t runCMD failed!')
-            print('\t command :', command)
-            return False
+        # extract the mesh and save
+        name = 'fuse.ply'
+        depth_trunc = (gaussExtractor.radius * 2.0) if depth_trunc < 0  else depth_trunc
+        voxel_size = (depth_trunc / mesh_res) if voxel_size < 0 else voxel_size
+        sdf_trunc = 5.0 * voxel_size if sdf_trunc < 0 else sdf_trunc
+        mesh = gaussExtractor.extract_mesh_bounded(voxel_size=voxel_size, sdf_trunc=sdf_trunc, depth_trunc=depth_trunc)
 
+        o3d.io.write_triangle_mesh(os.path.join(train_dir, name), mesh)
+        print("mesh saved at {}".format(os.path.join(train_dir, name)))
+        # post-process the mesh and save, saving the largest N clusters
+        mesh_post = post_process_mesh(mesh, cluster_to_keep=num_cluster)
+        o3d.io.write_triangle_mesh(os.path.join(train_dir, name.replace('.ply', '_post.ply')), mesh_post)
+        print("mesh post processed saved at {}".format(os.path.join(train_dir, name.replace('.ply', '_post.ply'))))
         return True

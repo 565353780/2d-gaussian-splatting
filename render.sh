@@ -9,11 +9,11 @@ DATA_PATH="${HOME}/chLi/Dataset/pixel_align/${SHAPE_ID}"
 DATA_PATH="${HOME}/chLi/Dataset/GS/haizei_1_v4"
 
 GPU=0
-ITERATIONS=30000
+ITERATIONS=10000
 
 CUDA_VISIBLE_DEVICES=${GPU} \
   python render.py \
   --iteration ${ITERATIONS} \
   -s ${DATA_PATH}/gs \
-  --images masked_images \
-  -m ${DATA_PATH}/2dgs
+  -m ${DATA_PATH}/2dgs/results/20260128_20:00:38 \
+  --white_background

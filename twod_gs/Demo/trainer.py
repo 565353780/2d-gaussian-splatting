@@ -20,5 +20,6 @@ def demo():
         save_log_folder_path=save_result_folder_path + 'logs/' + getCurrentTime() + '/',
         save_result_folder_path=save_result_folder_path + 'results/' + getCurrentTime() + '/',
     )
-    trainer.train(30000)
+    trainer.train(10000)
+    trainer.exportMesh()
     return True
