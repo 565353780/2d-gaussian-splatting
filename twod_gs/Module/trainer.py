@@ -4,10 +4,10 @@ from torch import nn
 from tqdm import tqdm
 from typing import Tuple, Union
 
+from utils.image_utils import psnr
+from gaussian_renderer import render
 from utils.general_utils import safe_state
 from utils.loss_utils import l1_loss, ssim
-from gaussian_renderer import render, network_gui
-from utils.image_utils import psnr, render_net_image
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 
@@ -267,45 +267,15 @@ class Trainer(object):
         return True
 
     def updateGSParams(self) -> bool:
-        self.gaussians.fixGrads()
         self.gaussians.optimizer.step()
         self.gaussians.optimizer.zero_grad(set_to_none = True)
         # self.gaussians.checkNan()
-
-        if isinstance(self.gaussians, MashGS):
-            self.gaussians.updateGSParams()
-
         return True
 
     def saveScene(self, iteration: int) -> str:
-        return self.scene.save(iteration)
-
-    @torch.no_grad
-    def renderForViewer(self, loss_dict: dict) -> bool:
-        if network_gui.conn == None:
-            network_gui.try_connect(self.dataset.render_items)
-        while network_gui.conn != None:
-            try:
-                net_image_bytes = None
-                custom_cam, do_training, keep_alive, scaling_modifer, render_mode = network_gui.receive()
-                if custom_cam != None:
-                    render_pkg = self.renderImage(custom_cam, scaling_modifer)
-                    net_image = render_net_image(render_pkg, self.dataset.render_items, render_mode, custom_cam)
-                    net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
-                metrics_dict = {
-                    "#": self.gaussians.get_opacity.shape[0],
-                    "loss": loss_dict['rgb']
-                    # Add more metrics as needed
-                }
-                # Send the data
-                network_gui.send(net_image_bytes, self.dataset.source_path, metrics_dict)
-                if do_training or not keep_alive:
-                    break
-            except Exception as e:
-                # raise e
-                network_gui.conn = None
-
-        return True
+        point_cloud_path = os.path.join(self.scene.model_path, "point_cloud/iteration_{}".format(iteration))
+        self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+        return point_cloud_path
 
     def trainForever(self) -> bool:
         progress_bar = tqdm(desc="Training forever progress")
@@ -345,8 +315,6 @@ class Trainer(object):
 
             self.updateGSParams()
 
-            self.renderForViewer(loss_dict)
-
     def train(self, iteration_num: int = -1):
         if iteration_num < 0:
             return self.trainForever()
@@ -385,8 +353,6 @@ class Trainer(object):
                     self.resetOpacity()
 
             self.updateGSParams()
-
-            self.renderForViewer(loss_dict)
 
             iteration += 1
         return True
