@@ -78,10 +78,11 @@ class OptimizationParams(ParamGroup):
         self.position_lr_delay_mult = 0.01
         self.position_lr_max_steps = 30_000
         self.feature_lr = 0.0025
+        self.shfeature_lr = 0.005
         self.opacity_lr = 0.05
         self.scaling_lr = 0.005
         self.rotation_lr = 0.001
-        self.percent_dense = 0.01
+        self.percent_dense = 0.001
         self.lambda_dssim = 0.2
         self.lambda_dist = 0.0
         self.lambda_normal = 0.05
@@ -93,6 +94,14 @@ class OptimizationParams(ParamGroup):
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
+
+        # fastgs parameters
+        self.loss_thresh = 0.1
+        self.grad_abs_thresh = 0.0012
+        self.highfeature_lr = 0.005
+        self.lowfeature_lr = 0.0025
+        self.grad_thresh = 0.0002
+        self.dense = 0.001
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

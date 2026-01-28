@@ -66,6 +66,27 @@ namespace FORWARD
 		const float* bg_color,
 		float* out_color,
 		float* out_others);
+
+	// Main rasterization method with metric_map support.
+	void render(
+		const dim3 grid, dim3 block,
+		const uint2* ranges,
+		const uint32_t* point_list,
+		int W, int H,
+		float focal_x, float focal_y,
+		const float2* points_xy_image,
+		const float* features,
+		const float* transMats,
+		const float* depths,
+		const float4* normal_opacity,
+		float* final_T,
+		uint32_t* n_contrib,
+		const float* bg_color,
+		float* out_color,
+		float* out_others,
+		const int* metric_map,
+		bool get_flag,
+		int* metricCount);
 }
 
 

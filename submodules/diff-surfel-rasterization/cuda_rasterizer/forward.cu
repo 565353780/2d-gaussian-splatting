@@ -447,6 +447,203 @@ renderCUDA(
 	}
 }
 
+// Main rasterization method with metric_map support
+template <uint32_t CHANNELS>
+__global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
+renderCUDAMetric(
+	const uint2* __restrict__ ranges,
+	const uint32_t* __restrict__ point_list,
+	int W, int H,
+	float focal_x, float focal_y,
+	const float2* __restrict__ points_xy_image,
+	const float* __restrict__ features,
+	const float* __restrict__ transMats,
+	const float* __restrict__ depths,
+	const float4* __restrict__ normal_opacity,
+	float* __restrict__ final_T,
+	uint32_t* __restrict__ n_contrib,
+	const float* __restrict__ bg_color,
+	float* __restrict__ out_color,
+	float* __restrict__ out_others,
+	const int* __restrict__ metric_map,
+	bool get_flag,
+	int* __restrict__ metricCount)
+{
+	// Identify current tile and associated min/max pixel range.
+	auto block = cg::this_thread_block();
+	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
+	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
+	uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
+	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
+	uint32_t pix_id = W * pix.y + pix.x;
+	float2 pixf = { (float)pix.x, (float)pix.y};
+
+	// Check if this thread is associated with a valid pixel or outside.
+	bool inside = pix.x < W&& pix.y < H;
+	// Done threads can help with fetching, but don't rasterize
+	bool done = !inside;
+
+	// Load start/end range of IDs to process in bit sorted list.
+	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
+	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
+	int toDo = range.y - range.x;
+
+	// Allocate storage for batches of collectively fetched data.
+	__shared__ int collected_id[BLOCK_SIZE];
+	__shared__ float2 collected_xy[BLOCK_SIZE];
+	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
+	__shared__ float3 collected_Tu[BLOCK_SIZE];
+	__shared__ float3 collected_Tv[BLOCK_SIZE];
+	__shared__ float3 collected_Tw[BLOCK_SIZE];
+
+	// Initialize helper variables
+	float T = 1.0f;
+	uint32_t contributor = 0;
+	uint32_t last_contributor = 0;
+	float C[CHANNELS] = { 0 };
+
+#if RENDER_AXUTILITY
+	// render axutility ouput
+	float N[3] = {0};
+	float D = { 0 };
+	float M1 = {0};
+	float M2 = {0};
+	float distortion = {0};
+	float median_depth = {0};
+	float median_contributor = {-1};
+#endif
+
+	// Iterate over batches until all done or range is complete
+	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
+	{
+		// End if entire block votes that it is done rasterizing
+		int num_done = __syncthreads_count(done);
+		if (num_done == BLOCK_SIZE)
+			break;
+
+		// Collectively fetch per-Gaussian data from global to shared
+		int progress = i * BLOCK_SIZE + block.thread_rank();
+		if (range.x + progress < range.y)
+		{
+			int coll_id = point_list[range.x + progress];
+			collected_id[block.thread_rank()] = coll_id;
+			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
+			collected_normal_opacity[block.thread_rank()] = normal_opacity[coll_id];
+			collected_Tu[block.thread_rank()] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
+			collected_Tv[block.thread_rank()] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
+			collected_Tw[block.thread_rank()] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
+		}
+		block.sync();
+
+		// Iterate over current batch
+		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
+		{
+			// Keep track of current position in range
+			contributor++;
+
+			// Fisrt compute two homogeneous planes, See Eq. (8)
+			const float2 xy = collected_xy[j];
+			const float3 Tu = collected_Tu[j];
+			const float3 Tv = collected_Tv[j];
+			const float3 Tw = collected_Tw[j];
+			// Transform the two planes into local u-v system. 
+			float3 k = pix.x * Tw - Tu;
+			float3 l = pix.y * Tw - Tv;
+			// Cross product of two planes is a line, Eq. (9)
+			float3 p = cross(k, l);
+			if (p.z == 0.0) continue;
+			// Perspective division to get the intersection (u,v), Eq. (10)
+			float2 s = {p.x / p.z, p.y / p.z};
+			float rho3d = (s.x * s.x + s.y * s.y); 
+			// Add low pass filter
+			float2 d = {xy.x - pixf.x, xy.y - pixf.y};
+			float rho2d = FilterInvSquare * (d.x * d.x + d.y * d.y); 
+			float rho = min(rho3d, rho2d);
+
+			// compute depth
+			float depth = (s.x * Tw.x + s.y * Tw.y) + Tw.z;
+			if (depth < near_n) continue;
+
+			float4 nor_o = collected_normal_opacity[j];
+			float normal[3] = {nor_o.x, nor_o.y, nor_o.z};
+			float opa = nor_o.w;
+
+			float power = -0.5f * rho;
+			if (power > 0.0f)
+				continue;
+
+			// Eq. (2) from 3D Gaussian splatting paper.
+			float alpha = min(0.99f, opa * exp(power));
+			if (alpha < 1.0f / 255.0f)
+				continue;
+			float test_T = T * (1 - alpha);
+			if (test_T < 0.0001f)
+			{
+				done = true;
+				continue;
+			}
+
+			float w = alpha * T;
+#if RENDER_AXUTILITY
+			// Render depth distortion map
+			float A = 1-T;
+			float m = far_n / (far_n - near_n) * (1 - near_n / depth);
+			distortion += (m * m * A + M2 - 2 * m * M1) * w;
+			D  += depth * w;
+			M1 += m * w;
+			M2 += m * m * w;
+
+			if (T > 0.5) {
+				median_depth = depth;
+				median_contributor = contributor;
+			}
+			// Render normal map
+			for (int ch=0; ch<3; ch++) N[ch] += normal[ch] * w;
+#endif
+
+			// Eq. (3) from 3D Gaussian splatting paper.
+			for (int ch = 0; ch < CHANNELS; ch++)
+				C[ch] += features[collected_id[j] * CHANNELS + ch] * w;
+
+			// Accumulate metric counts if get_flag is true and metric_map is provided
+			if(get_flag && metric_map != nullptr)
+			{
+				if(metric_map[pix_id] == 1)
+				{
+					atomicAdd(&(metricCount[collected_id[j]]), 1);
+				}
+			}
+
+			T = test_T;
+
+			// Keep track of last range entry to update this
+			// pixel.
+			last_contributor = contributor;
+		}
+	}
+
+	// All threads that treat valid pixel write out their final
+	// rendering data to the frame and auxiliary buffers.
+	if (inside)
+	{
+		final_T[pix_id] = T;
+		n_contrib[pix_id] = last_contributor;
+		for (int ch = 0; ch < CHANNELS; ch++)
+			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
+
+#if RENDER_AXUTILITY
+		n_contrib[pix_id + H * W] = median_contributor;
+		final_T[pix_id + H * W] = M1;
+		final_T[pix_id + 2 * H * W] = M2;
+		out_others[pix_id + DEPTH_OFFSET * H * W] = D;
+		out_others[pix_id + ALPHA_OFFSET * H * W] = 1 - T;
+		for (int ch=0; ch<3; ch++) out_others[pix_id + (NORMAL_OFFSET+ch) * H * W] = N[ch];
+		out_others[pix_id + MIDDEPTH_OFFSET * H * W] = median_depth;
+		out_others[pix_id + DISTORTION_OFFSET * H * W] = distortion;
+#endif
+	}
+}
+
 void FORWARD::render(
 	const dim3 grid, dim3 block,
 	const uint2* ranges,
@@ -479,6 +676,46 @@ void FORWARD::render(
 		bg_color,
 		out_color,
 		out_others);
+}
+
+void FORWARD::render(
+	const dim3 grid, dim3 block,
+	const uint2* ranges,
+	const uint32_t* point_list,
+	int W, int H,
+	float focal_x, float focal_y,
+	const float2* means2D,
+	const float* colors,
+	const float* transMats,
+	const float* depths,
+	const float4* normal_opacity,
+	float* final_T,
+	uint32_t* n_contrib,
+	const float* bg_color,
+	float* out_color,
+	float* out_others,
+	const int* metric_map,
+	bool get_flag,
+	int* metricCount)
+{
+	renderCUDAMetric<NUM_CHANNELS> << <grid, block >> > (
+		ranges,
+		point_list,
+		W, H,
+		focal_x, focal_y,
+		means2D,
+		colors,
+		transMats,
+		depths,
+		normal_opacity,
+		final_T,
+		n_contrib,
+		bg_color,
+		out_color,
+		out_others,
+		metric_map,
+		get_flag,
+		metricCount);
 }
 
 void FORWARD::preprocess(int P, int D, int M,

@@ -9,7 +9,7 @@ from utils.point_utils import depth_to_normal
 from twod_gs.Model.gs import GaussianModel
 
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, get_flag = None, metric_map = None):
     """
     Render the scene. 
     
@@ -27,6 +27,13 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
 
+    # Only create metric_map if get_flag is True and metric_map is provided
+    get_flag_value = get_flag if get_flag is not None else False
+    if get_flag_value and metric_map is None:
+        metric_map = torch.zeros(int(viewpoint_camera.image_height) * int(viewpoint_camera.image_width), dtype=torch.int, device='cuda')
+    elif not get_flag_value:
+        metric_map = None
+
     raster_settings = GaussianRasterizationSettings(
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
@@ -40,7 +47,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
         debug=False,
-        # pipe.debug
+        get_flag=get_flag_value,
+        metric_map=metric_map
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -87,7 +95,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     else:
         colors_precomp = override_color
     
-    rendered_image, radii, allmap = rasterizer(
+    result = rasterizer(
         means3D = means3D,
         means2D = means2D,
         shs = shs,
@@ -98,6 +106,13 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         cov3D_precomp = cov3D_precomp
     )
     
+    # Handle return value - check if accum_metric_counts is included
+    if len(result) == 4:
+        rendered_image, radii, allmap, accum_metric_counts = result
+    else:
+        rendered_image, radii, allmap = result
+        accum_metric_counts = None
+    
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
     rets =  {"render": rendered_image,
@@ -105,6 +120,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "visibility_filter" : radii > 0,
             "radii": radii,
     }
+    
+    if accum_metric_counts is not None:
+        rets["accum_metric_counts"] = accum_metric_counts
 
 
     # additional regularizations

@@ -8,6 +8,9 @@ from tqdm import tqdm
 from typing import Tuple
 from copy import deepcopy
 
+from lpipsPyTorch import lpips
+from fused_ssim import fused_ssim as fast_ssim
+
 from gaussian_renderer import render
 from utils.general_utils import safe_state
 from utils.mesh_utils import GaussianExtractor, post_process_mesh
@@ -18,8 +21,8 @@ from base_trainer.Module.logger import Logger
 from base_trainer.Module.base_trainer import BaseTrainer
 
 from twod_gs.Loss.l1 import l1_loss
-from twod_gs.Loss.ssim import ssim
 from twod_gs.Metric.psnr import psnr
+from twod_gs.Method.fast_utils import sampling_cameras, compute_gaussian_score_fastgs
 from twod_gs.Dataset.scene import Scene
 from twod_gs.Model.gs import GaussianModel
 
@@ -99,7 +102,7 @@ class Trainer(object):
 
         gt_image = viewpoint_cam.original_image.cuda()
         reg_loss = l1_loss(image, gt_image)
-        ssim_loss = 1.0 - ssim(image, gt_image)
+        ssim_loss = 1.0 - fast_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
         rgb_loss = (1.0 - lambda_dssim) * reg_loss + lambda_dssim * ssim_loss
 
         lambda_normal = lambda_normal if iteration > 1000 else 0.0
@@ -184,7 +187,7 @@ class Trainer(object):
             config = {'name': 'train', 'cameras' : [self.scene[idx % len(self.scene)] for idx in range(5, 30, 5)]}
             if config['cameras'] and len(config['cameras']) > 0:
                 l1_test = 0.0
-                psnr_test = 0.0
+                psnr_test, ssim_test, lpips_test = 0.0, 0.0, 0.0
                 for idx, viewpoint in enumerate(config['cameras']):
                     render_pkg = self.renderImage(viewpoint)
                     image = torch.clamp(render_pkg["render"], 0.0, 1.0)
@@ -217,12 +220,18 @@ class Trainer(object):
 
                     l1_test += l1_loss(image, gt_image).mean().double()
                     psnr_test += psnr(image, gt_image).mean().double()
+                    ssim_test += fast_ssim(image.unsqueeze(0), gt_image.unsqueeze(0)).mean().double()
+                    lpips_test += lpips(image, gt_image, net_type='vgg').mean().double()
 
                 psnr_test /= len(config['cameras'])
+                ssim_test /= len(config['cameras'])
+                lpips_test /= len(config['cameras'])
                 l1_test /= len(config['cameras'])
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
-                self.logger.addScalar('Val/l1', l1_test, iteration)
-                self.logger.addScalar('Val/psnr', psnr_test, iteration)
+                self.logger.addScalar('Eval/l1', l1_test, iteration)
+                self.logger.addScalar('Eval/psnr', psnr_test, iteration)
+                self.logger.addScalar('Eval/ssim', ssim_test, iteration)
+                self.logger.addScalar('Eval/lpips', lpips_test, iteration)
 
             torch.cuda.empty_cache()
         return True
@@ -236,9 +245,22 @@ class Trainer(object):
         return True
 
     @torch.no_grad()
-    def densifyStep(self) -> bool:
+    def densifyStep(self, render_pkg: dict) -> bool:
         size_threshold = 20
-        self.gaussians.densify_and_prune(self.opt.densify_grad_threshold, self.opt.opacity_cull, self.scene.cameras_extent, size_threshold)
+        my_viewpoint_stack = self.scene.train_cameras
+        camlist = sampling_cameras(my_viewpoint_stack)
+
+        # The multiview consistent densification of fastgs
+        importance_score, pruning_score = compute_gaussian_score_fastgs(camlist, self.gaussians, self.pipe, self.background, self.opt, DENSIFY=True)
+        self.gaussians.densify_and_prune_fastgs(
+            max_screen_size = size_threshold,
+            min_opacity = 0.005,
+            extent = self.scene.cameras_extent,
+            radii=render_pkg['radii'],
+            args = self.opt,
+            importance_score = importance_score,
+            pruning_score = pruning_score,
+        )
         return True
 
     @torch.no_grad()
@@ -252,9 +274,17 @@ class Trainer(object):
         return True
 
     @torch.no_grad()
-    def updateGSParams(self) -> bool:
-        self.gaussians.optimizer.step()
-        self.gaussians.optimizer.zero_grad(set_to_none = True)
+    def finalPrune(self) -> bool:
+        my_viewpoint_stack = self.scene.train_cameras
+        camlist = sampling_cameras(my_viewpoint_stack)
+
+        _, pruning_score = compute_gaussian_score_fastgs(camlist, self.gaussians, self.pipe, self.background, self.opt)
+        self.gaussians.final_prune_fastgs(min_opacity = 0.1, pruning_score = pruning_score)
+        return True
+
+    @torch.no_grad()
+    def updateGSParams(self, iteration: int) -> bool:
+        self.gaussians.optimizer_step(iteration)
         return True
 
     @torch.no_grad()
@@ -291,7 +321,7 @@ class Trainer(object):
             if iteration < self.opt.densify_until_iter:
                 self.recordGrads(render_pkg)
                 if iteration > self.opt.densify_from_iter and iteration % self.opt.densification_interval == 0:
-                    self.densifyStep()
+                    self.densifyStep(render_pkg)
 
                 if iteration % self.opt.opacity_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
                     self.resetOpacity()
@@ -299,7 +329,13 @@ class Trainer(object):
                 if iteration % self.opt.scaling_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
                     self.resetScaling()
 
-            self.updateGSParams()
+            # The multiview consistent pruning of fastgs. We do it every 3k iterations after 15k
+            # In this stage, the model converge basically. So we can prune more aggressively without degrading rendering quality.
+            # You can check the rendering results of 20K iterations in arxiv version (https://arxiv.org/abs/2511.04283), the rendering quality is already very good.
+            if iteration % 3000 == 0 and iteration > 15_000 and iteration < 30_000:
+                self.finalPrune()
+
+            self.updateGSParams(iteration)
 
             iteration += 1
             self.iteration = iteration
