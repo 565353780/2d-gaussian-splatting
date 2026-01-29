@@ -65,7 +65,9 @@ namespace FORWARD
 		uint32_t* n_contrib,
 		const float* bg_color,
 		float* out_color,
-		float* out_others);
+		float* out_others,
+		uint32_t* out_winner_id,
+		int* out_hit_counts);
 
 	// Main rasterization method with metric_map support.
 	void render(
@@ -84,6 +86,8 @@ namespace FORWARD
 		const float* bg_color,
 		float* out_color,
 		float* out_others,
+		uint32_t* out_winner_id,
+		int* out_hit_counts,
 		const int* metric_map,
 		bool get_flag,
 		int* metricCount);

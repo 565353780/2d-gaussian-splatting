@@ -125,12 +125,17 @@ class _RasterizeGaussians(torch.autograd.Function):
             try:
                 result = _C.rasterize_gaussians(*args)
                 
-                # Check result length to determine how to unpack
-                if len(result) == 8:
-                    num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, accum_metric_counts = result
+                # 10 = with metric (accum_metric_counts, winner_id, hit_counts), 9 = no metric (winner_id, hit_counts)
+                if len(result) == 10:
+                    num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, accum_metric_counts, winner_id, hit_counts = result
+                elif len(result) == 9:
+                    num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, winner_id, hit_counts = result
+                    accum_metric_counts = None
                 else:
                     num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer = result
                     accum_metric_counts = None
+                    winner_id = None
+                    hit_counts = None
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_fw.dump")
                 print("\nAn error occured in forward. Please forward snapshot_fw.dump for debugging.")
@@ -138,24 +143,28 @@ class _RasterizeGaussians(torch.autograd.Function):
         else:
             result = _C.rasterize_gaussians(*args)
             
-            # Check result length to determine how to unpack
-            if len(result) == 8:
-                num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, accum_metric_counts = result
+            if len(result) == 10:
+                num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, accum_metric_counts, winner_id, hit_counts = result
+            elif len(result) == 9:
+                num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, winner_id, hit_counts = result
+                accum_metric_counts = None
             else:
                 num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer = result
                 accum_metric_counts = None
+                winner_id = None
+                hit_counts = None
 
         # Keep relevant tensors for backward
         ctx.raster_settings = raster_settings
         ctx.num_rendered = num_rendered
         ctx.save_for_backward(colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer)
         if accum_metric_counts is not None:
-            return color, radii, depth, accum_metric_counts
+            return color, radii, depth, accum_metric_counts, winner_id, hit_counts
         else:
-            return color, radii, depth
+            return color, radii, depth, None, winner_id, hit_counts
 
     @staticmethod
-    def backward(ctx, grad_out_color, grad_radii, grad_depth):
+    def backward(ctx, grad_out_color, grad_radii, grad_depth, grad_accum_metric_counts, grad_winner_id, grad_hit_counts):
 
         # Restore necessary values from context
         num_rendered = ctx.num_rendered
@@ -280,9 +289,9 @@ class GaussianRasterizer(nn.Module):
             raster_settings, 
         )
         
-        # Handle return value - check if accum_metric_counts is included
-        if len(result) == 4:
-            return result  # color, radii, depth, accum_metric_counts
+        # Handle return value: (color, radii, depth, accum_metric_counts, winner_id, hit_counts) - always 6 elements
+        if len(result) == 6:
+            return result
         else:
-            return result  # color, radii, depth
+            return result
 

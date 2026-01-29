@@ -269,7 +269,9 @@ renderCUDA(
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
 	float* __restrict__ out_color,
-	float* __restrict__ out_others)
+	float* __restrict__ out_others,
+	uint32_t* __restrict__ out_winner_id,
+	int* __restrict__ out_hit_counts)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -303,6 +305,9 @@ renderCUDA(
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
+	// Gaussian id that contributes the largest opacity weight (alpha*T) at this pixel
+	float max_weight = 0.0f;
+	uint32_t max_weight_gaussian_id = 0xFFFFFFFFu;
 
 
 #if RENDER_AXUTILITY
@@ -393,7 +398,13 @@ renderCUDA(
 				continue;
 			}
 
-			float w = alpha * T;
+			float w = alpha * T;  // compositing weight: contribution to pixel = w * color; T = T_before
+			if (out_hit_counts != nullptr)
+				atomicAdd(&out_hit_counts[collected_id[j]], 1);
+			if (out_winner_id != nullptr && w > max_weight) {
+				max_weight = w;
+				max_weight_gaussian_id = collected_id[j];  // winner = argmax_i (alpha_i * T_before_i), not alpha alone
+			}
 #if RENDER_AXUTILITY
 			// Render depth distortion map
 			// Efficient implementation of distortion loss, see 2DGS' paper appendix.
@@ -430,6 +441,8 @@ renderCUDA(
 	{
 		final_T[pix_id] = T;
 		n_contrib[pix_id] = last_contributor;
+		if (out_winner_id != nullptr)
+			out_winner_id[pix_id] = max_weight_gaussian_id;
 		for (int ch = 0; ch < CHANNELS; ch++)
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 
@@ -465,6 +478,8 @@ renderCUDAMetric(
 	const float* __restrict__ bg_color,
 	float* __restrict__ out_color,
 	float* __restrict__ out_others,
+	uint32_t* __restrict__ out_winner_id,
+	int* __restrict__ out_hit_counts,
 	const int* __restrict__ metric_map,
 	bool get_flag,
 	int* __restrict__ metricCount)
@@ -501,6 +516,8 @@ renderCUDAMetric(
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
+	float max_weight = 0.0f;
+	uint32_t max_weight_gaussian_id = 0xFFFFFFFFu;
 
 #if RENDER_AXUTILITY
 	// render axutility ouput
@@ -583,7 +600,13 @@ renderCUDAMetric(
 				continue;
 			}
 
-			float w = alpha * T;
+			float w = alpha * T;  // compositing weight = alpha_i * T_before (same as final compositing)
+			if (out_hit_counts != nullptr)
+				atomicAdd(&out_hit_counts[collected_id[j]], 1);
+			if (out_winner_id != nullptr && w > max_weight) {
+				max_weight = w;
+				max_weight_gaussian_id = collected_id[j];
+			}
 #if RENDER_AXUTILITY
 			// Render depth distortion map
 			float A = 1-T;
@@ -628,6 +651,8 @@ renderCUDAMetric(
 	{
 		final_T[pix_id] = T;
 		n_contrib[pix_id] = last_contributor;
+		if (out_winner_id != nullptr)
+			out_winner_id[pix_id] = max_weight_gaussian_id;
 		for (int ch = 0; ch < CHANNELS; ch++)
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 
@@ -659,7 +684,9 @@ void FORWARD::render(
 	uint32_t* n_contrib,
 	const float* bg_color,
 	float* out_color,
-	float* out_others)
+	float* out_others,
+	uint32_t* out_winner_id,
+	int* out_hit_counts)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
@@ -675,7 +702,9 @@ void FORWARD::render(
 		n_contrib,
 		bg_color,
 		out_color,
-		out_others);
+		out_others,
+		out_winner_id,
+		out_hit_counts);
 }
 
 void FORWARD::render(
@@ -694,6 +723,8 @@ void FORWARD::render(
 	const float* bg_color,
 	float* out_color,
 	float* out_others,
+	uint32_t* out_winner_id,
+	int* out_hit_counts,
 	const int* metric_map,
 	bool get_flag,
 	int* metricCount)
@@ -713,6 +744,8 @@ void FORWARD::render(
 		bg_color,
 		out_color,
 		out_others,
+		out_winner_id,
+		out_hit_counts,
 		metric_map,
 		get_flag,
 		metricCount);

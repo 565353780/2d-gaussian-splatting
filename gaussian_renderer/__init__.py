@@ -106,12 +106,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         cov3D_precomp = cov3D_precomp
     )
     
-    # Handle return value - check if accum_metric_counts is included
-    if len(result) == 4:
-        rendered_image, radii, allmap, accum_metric_counts = result
-    else:
-        rendered_image, radii, allmap = result
-        accum_metric_counts = None
+    # Handle return value: (color, radii, depth, accum_metric_counts, winner_id, hit_counts) - always 6 elements
+    rendered_image, radii, allmap, accum_metric_counts, winner_id, hit_counts = result
     
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
@@ -119,6 +115,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "viewspace_points": means2D,
             "visibility_filter" : radii > 0,
             "radii": radii,
+            "winner_id": winner_id,  # HxW: per-pixel Gaussian id with largest opacity contribution (-1 if none)
+            "hit_counts": hit_counts,  # P: per-Gaussian count of rays that hit (entered blending)
     }
     
     if accum_metric_counts is not None:

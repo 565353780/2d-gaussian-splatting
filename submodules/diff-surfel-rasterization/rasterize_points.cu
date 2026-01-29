@@ -11,6 +11,7 @@
 
 #include <math.h>
 #include <torch/extension.h>
+#include <cstdint>
 #include <cstdio>
 #include <sstream>
 #include <iostream>
@@ -36,7 +37,7 @@ std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
 	return lambda;
 }
 
-std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -85,6 +86,10 @@ RasterizeGaussiansCUDA(
   torch::Tensor out_color = torch::full({NUM_CHANNELS, H, W}, 0.0, float_opts);
   torch::Tensor out_others = torch::full({3+3+1, H, W}, 0.0, float_opts);
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
+  // HxW: per-pixel Gaussian id with largest opacity contribution (0xFFFFFFFF = -1 if none)
+  torch::Tensor winner_id = torch::full({H, W}, -1, int_opts);
+  // P: per-Gaussian count of rays that hit (entered blending)
+  torch::Tensor hit_counts = torch::zeros({P}, int_opts);
   
   torch::Device device(torch::kCUDA);
   torch::TensorOptions options(torch::kByte);
@@ -128,12 +133,14 @@ RasterizeGaussiansCUDA(
 		out_color.contiguous().data<float>(),
 		out_others.contiguous().data<float>(),
 		radii.contiguous().data<int>(),
-		debug);
+		debug,
+		reinterpret_cast<uint32_t*>(winner_id.contiguous().data_ptr<int32_t>()),
+		hit_counts.contiguous().data<int>());
   }
-  return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer);
+  return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer, winner_id, hit_counts);
 }
 
-std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -184,6 +191,8 @@ RasterizeGaussiansCUDA(
   torch::Tensor out_color = torch::full({NUM_CHANNELS, H, W}, 0.0, float_opts);
   torch::Tensor out_others = torch::full({3+3+1, H, W}, 0.0, float_opts);
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
+  torch::Tensor winner_id = torch::full({H, W}, -1, int_opts);
+  torch::Tensor hit_counts = torch::zeros({P}, int_opts);
   
   torch::Device device(torch::kCUDA);
   torch::TensorOptions options(torch::kByte);
@@ -255,16 +264,18 @@ RasterizeGaussiansCUDA(
 		radii.contiguous().data<int>(),
 		debug,
 		get_flag,
-		accum_metric_counts_ptr);
+		accum_metric_counts_ptr,
+		reinterpret_cast<uint32_t*>(winner_id.contiguous().data_ptr<int32_t>()),
+		hit_counts.contiguous().data<int>());
   }
   
   if(get_flag)
   {
-	return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer, accum_metric_counts);
+	return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer, accum_metric_counts, winner_id, hit_counts);
   }
   else
   {
-	return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer, torch::empty({0}, int_opts));
+	return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer, torch::empty({0}, int_opts), winner_id, hit_counts);
   }
 }
 

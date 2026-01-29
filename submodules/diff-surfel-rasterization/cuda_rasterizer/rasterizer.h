@@ -12,6 +12,7 @@
 #ifndef CUDA_RASTERIZER_H_INCLUDED
 #define CUDA_RASTERIZER_H_INCLUDED
 
+#include <cstdint>
 #include <vector>
 #include <functional>
 
@@ -51,7 +52,9 @@ namespace CudaRasterizer
 			float* out_color,
 			float* out_others,
 			int* radii = nullptr,
-			bool debug = false);
+			bool debug = false,
+			uint32_t* out_winner_id = nullptr,
+			int* out_hit_counts = nullptr);
 
 		static int forward(
 			std::function<char* (size_t)> geometryBuffer,
@@ -79,7 +82,9 @@ namespace CudaRasterizer
 			int* radii = nullptr,
 			bool debug = false,
 			bool get_flag = false,
-			int* metricCount = nullptr);
+			int* metricCount = nullptr,
+			uint32_t* out_winner_id = nullptr,
+			int* out_hit_counts = nullptr);
 
 		static void backward(
 			const int P, int D, int M, int R,
