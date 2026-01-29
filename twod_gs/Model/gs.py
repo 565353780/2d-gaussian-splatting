@@ -25,6 +25,11 @@ class GaussianModel:
             trans[:, 3, 3] = 1
             return trans
 
+        '''
+        max_scaling = 0.1
+        self.scaling_activation = lambda x: max_scaling * torch.sigmoid(x)
+        self.scaling_inverse_activation = lambda x: torch.log(x/max_scaling / (1.0 - x/max_scaling))
+        '''
         self.scaling_activation = torch.exp
         self.scaling_inverse_activation = torch.log
 
@@ -36,7 +41,7 @@ class GaussianModel:
 
     def __init__(self, sh_degree : int):
         self.active_sh_degree = 0
-        self.max_sh_degree = sh_degree  
+        self.max_sh_degree = sh_degree
         self._xyz = torch.empty(0)
         self._features_dc = torch.empty(0)
         self._features_rest = torch.empty(0)

@@ -75,6 +75,15 @@ class Trainer(object):
 
         self.logger = Logger()
 
+        # Ray-wise Surface Winner + Surface hardening (Phase B)
+        # S_i = fraction of rays where Gaussian i contributes (proxy for "is winner")
+        # C_i = EMA(S_i) = surface confidence (temporal stability)
+        self.surface_confidence = None  # shape (N,) when inited; EMA of S_i
+        self.surface_ema_momentum = getattr(self.opt, "surface_ema_momentum", 0.99)
+        self.surface_hardening_start_iter = getattr(self.opt, "surface_hardening_start_iter", 10_000)
+        self.lambda_surface = getattr(self.opt, "lambda_surface", 0.1)
+        self.lambda_exclusive = getattr(self.opt, "lambda_exclusive", 0.05)
+
         BaseTrainer.initRecords(self)
         return
 
@@ -89,7 +98,7 @@ class Trainer(object):
         lambda_normal: float = 0.01,
         lambda_dist: float = 0.01,
         lambda_opacity: float = 0.01,
-        lambda_scaling: float = 0.01,
+        lambda_scaling: float = 0.1,
         maximum_opacity: bool = False,
     ) -> Tuple[dict, dict]:
         self.gaussians.update_learning_rate(iteration)
@@ -119,7 +128,6 @@ class Trainer(object):
             normal_loss = lambda_normal * normal_error.mean()
 
         lambda_dist = lambda_dist if iteration > 1000 else 0.0
-        #FIXME: seems this dist not work
         dist_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
         if lambda_dist > 0:
             rend_dist = render_pkg["rend_dist"]
@@ -127,8 +135,9 @@ class Trainer(object):
             valid_rend_dist = rend_dist[valid_dist_idxs]
             dist_loss = lambda_dist * valid_rend_dist.mean()
 
+        # Phase A: Surface selection — push non-surface to 0 (opacity, scale)
         opacity_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
-        if lambda_opacity > 0:
+        if lambda_opacity > 0 and iteration > self.surface_hardening_start_iter:
             if maximum_opacity:
                 opacity_loss = lambda_opacity * nn.MSELoss()(self.gaussians.get_opacity, torch.ones_like(self.gaussians._opacity))
             else:
@@ -138,8 +147,44 @@ class Trainer(object):
         if lambda_scaling > 0:
             scaling_loss = lambda_scaling * nn.MSELoss()(self.gaussians.get_scaling, torch.zeros_like(self.gaussians._scaling))
 
+        # Phase B: Surface hardening — ray-wise exclusivity + temporal stability
+        # S_i = fraction of rays where Gaussian i contributes (proxy for "is winner"); C_i = EMA(S_i)
+        # L_surface = λ Σ_i C_i (1-α_i)²: push high-confidence Gaussians to opacity 1
+        # L_exclusive (soft): mean(rend_alpha*(1-rend_alpha)) to encourage one dominant contributor per ray.
+        #   Exact L_exclusive = Σ_r Σ_{i≠g*} α_i² would need rasterizer to expose winner_id per pixel.
+        surface_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+        exclusive_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+        if iteration > self.surface_hardening_start_iter:
+            N = self.gaussians.get_xyz.shape[0]
+            H, W = int(viewpoint_cam.image_height), int(viewpoint_cam.image_width)
+            # S_i proxy: per-Gaussian hit count on all rays (metric_map=ones) -> normalized
+            with torch.no_grad():
+                metric_map_flat = torch.ones(H * W, dtype=torch.int32, device=rgb_loss.device)
+                pkg_surface = render(
+                    viewpoint_cam, self.gaussians, self.pipe, self.background,
+                    get_flag=True, metric_map=metric_map_flat
+                )
+                accum = pkg_surface.get("accum_metric_counts")
+                if accum is not None:
+                    S_i = accum.float() / (accum.sum().float().clamp(min=1e-8))
+                    if self.surface_confidence is None or self.surface_confidence.shape[0] != N:
+                        self.surface_confidence = S_i.clone()
+                    else:
+                        self.surface_confidence = (
+                            self.surface_ema_momentum * self.surface_confidence
+                            + (1.0 - self.surface_ema_momentum) * S_i
+                        )
+            # L_surface: push high C_i Gaussians to opacity 1
+            if self.surface_confidence is not None and self.surface_confidence.shape[0] == N:
+                C_i = self.surface_confidence.detach().to(rgb_loss.dtype)
+                alpha_i = self.gaussians.get_opacity.squeeze(-1)
+                surface_loss = self.lambda_surface * (C_i * (1.0 - alpha_i).pow(2)).sum()
+            # L_exclusive (soft): encourage each ray to have one dominant contributor (rend_alpha near 0 or 1)
+            rend_alpha = render_pkg["rend_alpha"].squeeze(0)
+            exclusive_loss = self.lambda_exclusive * (rend_alpha * (1.0 - rend_alpha)).mean()
+
         # loss
-        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss
+        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss + surface_loss + exclusive_loss
 
         total_loss.backward()
 
@@ -151,6 +196,8 @@ class Trainer(object):
             'normal': normal_loss.item(),
             'opacity': opacity_loss.item(),
             'scaling': scaling_loss.item(),
+            'surface': surface_loss.item(),
+            'exclusive': exclusive_loss.item(),
             'total': total_loss.item(),
         }
 
@@ -165,6 +212,8 @@ class Trainer(object):
         normal_loss = loss_dict['normal']
         opacity_loss = loss_dict['opacity']
         scaling_loss = loss_dict['scaling']
+        surface_loss = loss_dict.get('surface', 0.0)
+        exclusive_loss = loss_dict.get('exclusive', 0.0)
         total_loss = loss_dict['total']
 
         # Log and save
@@ -175,6 +224,8 @@ class Trainer(object):
         self.logger.addScalar('Loss/normal', normal_loss, iteration)
         self.logger.addScalar('Loss/opacity', opacity_loss, iteration)
         self.logger.addScalar('Loss/scaling', scaling_loss, iteration)
+        self.logger.addScalar('Loss/surface', surface_loss, iteration)
+        self.logger.addScalar('Loss/exclusive', exclusive_loss, iteration)
         self.logger.addScalar('Loss/total', total_loss, iteration)
 
         self.logger.addScalar('Gaussian/total_points', self.gaussians.get_xyz.shape[0], iteration)
