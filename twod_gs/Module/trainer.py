@@ -37,8 +37,8 @@ class Trainer(object):
         self.save_result_folder_path = save_result_folder_path
         self.save_log_folder_path = save_log_folder_path
 
-        self.test_freq = 500
-        self.save_freq = 500
+        self.test_freq = 1000
+        self.save_freq = 1000
 
         # Set up command line argument parser
         parser = ArgumentParser(description="Training script parameters")
@@ -101,8 +101,8 @@ class Trainer(object):
         lambda_normal: float = 0.01,
         lambda_dist: float = 0.01,
         lambda_opacity: float = 0.01,
-        lambda_scaling: float = 0.1,
-        maximum_opacity: bool = False,
+        lambda_scaling: float = 1.0,
+        lambda_surf_scaling: float = 1.0,
     ) -> Tuple[dict, dict]:
         self.gaussians.update_learning_rate(iteration)
 
@@ -140,11 +140,8 @@ class Trainer(object):
 
         # Phase A: Surface selection — push non-surface to 0 (opacity, scale)；Phase B 开始后彻底关闭
         opacity_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
-        if lambda_opacity > 0 and iteration < self.surface_hardening_start_iter:
-            if maximum_opacity:
-                opacity_loss = lambda_opacity * nn.MSELoss()(self.gaussians.get_opacity, torch.ones_like(self.gaussians._opacity))
-            else:
-                opacity_loss = lambda_opacity * nn.MSELoss()(self.gaussians.get_opacity, torch.zeros_like(self.gaussians._opacity))
+        if lambda_opacity > 0:
+            opacity_loss = lambda_opacity * nn.MSELoss()(self.gaussians.get_opacity, torch.zeros_like(self.gaussians._opacity))
 
         scaling_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
         if lambda_scaling > 0:
@@ -157,6 +154,8 @@ class Trainer(object):
         surface_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
         exclusive_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
         winner_opacity_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+        surf_scaling_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+
         if iteration > self.surface_hardening_start_iter:
             winner_id = render_pkg.get("winner_id")
             hit_counts = render_pkg.get("hit_counts")
@@ -208,6 +207,12 @@ class Trainer(object):
                     s_i = self.gaussians._opacity.squeeze(-1)
                     s_target = inverse_sigmoid(torch.tensor(0.99, device=s_i.device, dtype=s_i.dtype))
                     surface_loss = self.lambda_surface * (C_i * torch.relu(s_target - s_i).pow(2)).sum() / n_surface
+
+                    # L_scale (surface-weighted scale collapse): 仅对 surface_mask 对应的 gaussians 计算
+                    if lambda_surf_scaling > 0:
+                        scale_xy = self.gaussians.get_scaling  # (N, 2)
+                        scale_sq_sum = (scale_xy ** 2).sum(dim=1)  # (N,)
+                        surf_scaling_loss = lambda_surf_scaling * (C_i * scale_sq_sum).sum() / n_surface
                 # L_exclusive: 对 loser 做轻微惩罚，按 ray 数 (H*W) 归一化为 per-ray，避免压倒 rgb
                 alpha_i = self.gaussians.get_opacity.squeeze(-1)
                 n_loser_i = (n_hit - n_winner).clamp(min=0).to(rgb_loss.dtype)
@@ -219,7 +224,7 @@ class Trainer(object):
                     winner_opacity_loss = self.lambda_winner_opacity * raw_winner_opacity
 
         # loss
-        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss + surface_loss + exclusive_loss + winner_opacity_loss
+        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss + surface_loss + exclusive_loss + winner_opacity_loss + surf_scaling_loss
 
         total_loss.backward()
 
@@ -231,6 +236,7 @@ class Trainer(object):
             'normal': normal_loss.item(),
             'opacity': opacity_loss.item(),
             'scaling': scaling_loss.item(),
+            'surf_scaling': surf_scaling_loss.item(),
             'surface': surface_loss.item(),
             'exclusive': exclusive_loss.item(),
             'winner_opacity': winner_opacity_loss.item(),
@@ -248,6 +254,7 @@ class Trainer(object):
         normal_loss = loss_dict['normal']
         opacity_loss = loss_dict['opacity']
         scaling_loss = loss_dict['scaling']
+        surf_scaling_loss = loss_dict['surf_scaling']
         surface_loss = loss_dict.get('surface', 0.0)
         exclusive_loss = loss_dict.get('exclusive', 0.0)
         winner_opacity_loss = loss_dict.get('winner_opacity', 0.0)
@@ -261,6 +268,7 @@ class Trainer(object):
         self.logger.addScalar('Loss/normal', normal_loss, iteration)
         self.logger.addScalar('Loss/opacity', opacity_loss, iteration)
         self.logger.addScalar('Loss/scaling', scaling_loss, iteration)
+        self.logger.addScalar('Loss/surf_scaling', surf_scaling_loss, iteration)
         self.logger.addScalar('Loss/surface', surface_loss, iteration)
         self.logger.addScalar('Loss/exclusive', exclusive_loss, iteration)
         self.logger.addScalar('Loss/winner_opacity', winner_opacity_loss, iteration)

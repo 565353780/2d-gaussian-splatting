@@ -44,7 +44,7 @@ class ParamGroup:
                 setattr(group, arg[0], arg[1])
         return group
 
-class ModelParams(ParamGroup): 
+class ModelParams(ParamGroup):
     def __init__(self, parser, sentinel=False):
         self.sh_degree = 1
         self._source_path = ""
@@ -93,7 +93,7 @@ class OptimizationParams(ParamGroup):
         self.scaling_reset_interval = 500
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
-        self.densify_grad_threshold = 0.0002
+        self.densify_grad_threshold = 0.002
 
         # fastgs parameters
         self.loss_thresh = 0.1
@@ -105,7 +105,7 @@ class OptimizationParams(ParamGroup):
 
         # Phase B: Surface hardening
         self.surface_ema_momentum = 0.99
-        self.surface_hardening_start_iter = 3000
+        self.surface_hardening_start_iter = 1000
         self.lambda_surface = 0.01
         self.lambda_exclusive = 0.005
         self.lambda_winner_opacity = 0.05
