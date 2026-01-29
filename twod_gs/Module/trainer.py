@@ -80,11 +80,12 @@ class Trainer(object):
         self.surface_confidence = None  # shape (N,) when inited; EMA of S_i
         self.surface_ema_momentum = getattr(self.opt, "surface_ema_momentum", 0.99)
         self.surface_hardening_start_iter = getattr(self.opt, "surface_hardening_start_iter", 10_000)
-        self.lambda_surface = getattr(self.opt, "lambda_surface", 0.1)
-        # 建议 λ_exclusive 为 λ_surface 的 0.1～0.5 倍，保持 λ_exclusive < λ_surface
-        self.lambda_exclusive = getattr(self.opt, "lambda_exclusive", 0.05)
+        # Phase B：仅奖励表面附近 Gaussian 的 opacity→1，非表面只做轻微惩罚；loss 均做归一化避免压倒 rgb
+        self.lambda_surface = getattr(self.opt, "lambda_surface", 0.05)
+        self.lambda_exclusive = getattr(self.opt, "lambda_exclusive", 0.01)  # 轻微惩罚 loser，远小于 λ_surface
         self.surface_confidence_max = getattr(self.opt, "surface_confidence_max", 0.1)  # clamp C_i 避免梯度压倒 photometric
         self.surface_confidence_min = getattr(self.opt, "surface_confidence_min", 0.01)  # C_i 低于此不施加 push→1
+        self.lambda_winner_opacity = getattr(self.opt, "lambda_winner_opacity", 0.05)  # 鼓励 winner gaussians 的 opacity→1
 
         BaseTrainer.initRecords(self)
         return
@@ -155,6 +156,7 @@ class Trainer(object):
         # C_i = EMA(S_i)。L_surface / L_exclusive 见下。
         surface_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
         exclusive_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+        winner_opacity_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
         if iteration > self.surface_hardening_start_iter:
             winner_id = render_pkg.get("winner_id")
             hit_counts = render_pkg.get("hit_counts")
@@ -194,23 +196,30 @@ class Trainer(object):
                             self.surface_ema_momentum * self.surface_confidence
                             + (1.0 - self.surface_ema_momentum) * S_i
                         )
-                # L_surface: 仅对 C_i > C_min 的 Gaussian 施加 push→1；C_i 很小则不施加任何 push
+                # L_surface: 仅对 C_i > C_min 的“表面”Gaussian 施加 push→1，按表面点数归一化，避免随 N 爆炸
                 if self.surface_confidence.shape[0] == N:
                     C_i_raw = torch.clamp(
                         self.surface_confidence.detach().to(rgb_loss.dtype),
                         0.0, self.surface_confidence_max,
                     )
-                    C_i = C_i_raw * (C_i_raw > self.surface_confidence_min).to(rgb_loss.dtype)
+                    surface_mask = (C_i_raw > self.surface_confidence_min).to(rgb_loss.dtype)
+                    C_i = C_i_raw * surface_mask
+                    n_surface = surface_mask.sum().clamp(min=1.0)
                     s_i = self.gaussians._opacity.squeeze(-1)
                     s_target = inverse_sigmoid(torch.tensor(0.99, device=s_i.device, dtype=s_i.dtype))
-                    surface_loss = self.lambda_surface * (C_i * torch.relu(s_target - s_i).pow(2)).sum()
-                # L_exclusive：ray-wise 等价 = λ Σ_i α_i² (n_hit_i − n_winner_i)（i 作为 loser 的 ray 数）
+                    surface_loss = self.lambda_surface * (C_i * torch.relu(s_target - s_i).pow(2)).sum() / n_surface
+                # L_exclusive: 对 loser 做轻微惩罚，按 ray 数 (H*W) 归一化为 per-ray，避免压倒 rgb
                 alpha_i = self.gaussians.get_opacity.squeeze(-1)
                 n_loser_i = (n_hit - n_winner).clamp(min=0).to(rgb_loss.dtype)
-                exclusive_loss = self.lambda_exclusive * (alpha_i.pow(2) * n_loser_i).sum()
+                n_rays = float(H * W)
+                exclusive_loss = self.lambda_exclusive * (alpha_i.pow(2) * n_loser_i).sum() / n_rays
+                # L_winner_opacity: 鼓励 winner gaussians 的 opacity→1，按 n_winner 加权
+                if n_winner.sum() > 0:
+                    raw_winner_opacity = (n_winner * (1.0 - alpha_i).pow(2)).sum() / (n_winner.sum() + eps)
+                    winner_opacity_loss = self.lambda_winner_opacity * raw_winner_opacity
 
         # loss
-        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss + surface_loss + exclusive_loss
+        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss + surface_loss + exclusive_loss + winner_opacity_loss
 
         total_loss.backward()
 
@@ -224,6 +233,7 @@ class Trainer(object):
             'scaling': scaling_loss.item(),
             'surface': surface_loss.item(),
             'exclusive': exclusive_loss.item(),
+            'winner_opacity': winner_opacity_loss.item(),
             'total': total_loss.item(),
         }
 
@@ -240,6 +250,7 @@ class Trainer(object):
         scaling_loss = loss_dict['scaling']
         surface_loss = loss_dict.get('surface', 0.0)
         exclusive_loss = loss_dict.get('exclusive', 0.0)
+        winner_opacity_loss = loss_dict.get('winner_opacity', 0.0)
         total_loss = loss_dict['total']
 
         # Log and save
@@ -252,6 +263,7 @@ class Trainer(object):
         self.logger.addScalar('Loss/scaling', scaling_loss, iteration)
         self.logger.addScalar('Loss/surface', surface_loss, iteration)
         self.logger.addScalar('Loss/exclusive', exclusive_loss, iteration)
+        self.logger.addScalar('Loss/winner_opacity', winner_opacity_loss, iteration)
         self.logger.addScalar('Loss/total', total_loss, iteration)
 
         self.logger.addScalar('Gaussian/total_points', self.gaussians.get_xyz.shape[0], iteration)
@@ -425,7 +437,7 @@ class Trainer(object):
         voxel_size: float = -1.0,
         depth_trunc: float = -1.0,
         sdf_trunc: float = -1.0,
-        num_cluster: int = 1,
+        num_cluster: int = 50,
     ) -> bool:
         export_scene = deepcopy(self.scene)
         export_gaussians = export_scene.gaussians

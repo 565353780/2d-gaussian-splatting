@@ -103,11 +103,12 @@ class OptimizationParams(ParamGroup):
         self.grad_thresh = 0.0002
         self.dense = 0.001
 
-        # Phase B: Surface hardening (ray-wise exclusivity + temporal stability)
+        # Phase B: Surface hardening
         self.surface_ema_momentum = 0.99
         self.surface_hardening_start_iter = 3000
-        self.lambda_surface = 0.1
-        self.lambda_exclusive = 0.05
+        self.lambda_surface = 0.01
+        self.lambda_exclusive = 0.005
+        self.lambda_winner_opacity = 0.05
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):
