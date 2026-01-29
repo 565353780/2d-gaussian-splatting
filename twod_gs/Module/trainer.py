@@ -50,7 +50,7 @@ class Trainer(object):
         args.source_path = colmap_data_folder_path
         args.images = 'masked_images'
         args.white_background = True
-        args.resolution = 1
+        args.resolution = 2
         args.model_path = save_result_folder_path
 
         print("Optimizing " + args.model_path)
@@ -343,6 +343,7 @@ class Trainer(object):
 
     def exportMesh(
         self,
+        mesh_res: int = 1024,
         voxel_size: float = -1.0,
         depth_trunc: float = -1.0,
         sdf_trunc: float = -1.0,

@@ -8,12 +8,12 @@ SHAPE_ID="0228c5cdba8393cd4d947ac2e915f769f684c73b87e6939c129611ba665cafcb"
 DATA_PATH="${HOME}/chLi/Dataset/pixel_align/${SHAPE_ID}"
 DATA_PATH="${HOME}/chLi/Dataset/GS/haizei_1_v4"
 
-GPU=0
-ITERATIONS=8500
+GPU=1
+ITERATIONS=10000
 
 CUDA_VISIBLE_DEVICES=${GPU} \
-  python render.py \
+  python export_mesh.py \
   --iteration ${ITERATIONS} \
   -s ${DATA_PATH}/gs \
-  -m ${DATA_PATH}/2dgs/results/20260128_20:00:38 \
+  -m ${DATA_PATH}/2dgs/results/20260128_23:36:13 \
   --white_background
