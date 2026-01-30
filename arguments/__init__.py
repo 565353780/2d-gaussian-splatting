@@ -50,6 +50,7 @@ class ModelParams(ParamGroup):
         self._source_path = ""
         self._model_path = ""
         self._images = "images"
+        self.masks = "masks"  # 不加下划线，避免生成 -m 与 model_path 冲突
         self._resolution = 1
         self._white_background = False
         self.data_device = "cuda"

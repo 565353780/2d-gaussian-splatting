@@ -48,7 +48,8 @@ class Trainer(object):
         args = parser.parse_args(sys.argv[1:])
 
         args.source_path = colmap_data_folder_path
-        args.images = 'masked_images'
+        args.images = 'images'
+        args.masks = 'masks'
         args.white_background = True
         args.resolution = 2
         args.model_path = save_result_folder_path
@@ -371,6 +372,51 @@ class Trainer(object):
         return True
 
     @torch.no_grad()
+    def pruneGaussiansOutsideMasks(self) -> bool:
+        """删除不在任一 mask 内的 gaussian：将每个 gaussian 投影到所有带 mask 的视角，若在任一视角的 mask 内则保留，否则删除。"""
+        cams_with_mask = [c for c in self.scene.train_cameras if getattr(c, 'gt_alpha_mask', None) is not None]
+        if not cams_with_mask:
+            return True
+
+        xyz = self.gaussians.get_xyz  # (N, 3) on cuda
+        N = xyz.shape[0]
+        if N == 0:
+            return True
+
+        device = xyz.device
+        inside_any = torch.zeros(N, dtype=torch.bool, device=device)
+
+        for cam in cams_with_mask:
+            # full_proj_transform: (4, 4), world point -> NDC
+            proj = cam.full_proj_transform.to(device)
+            mask = cam.gt_alpha_mask.to(device)  # (1, H, W)
+            H, W = mask.shape[1], mask.shape[2]
+
+            xyz_h = torch.cat([xyz, torch.ones(N, 1, device=device, dtype=xyz.dtype)], dim=1)  # (N, 4)
+            proj_pts = (proj.unsqueeze(0) @ xyz_h.unsqueeze(-1)).squeeze(-1)  # (N, 4)
+            w = proj_pts[:, 3].clamp(min=1e-6)
+            ndc_x = proj_pts[:, 0] / w
+            ndc_y = proj_pts[:, 1] / w
+            ndc_z = proj_pts[:, 2] / w
+
+            # 在相机前方 (NDC z 通常在 [0,1] 或 [-1,1] 视实现而定，这里取可见为 z > 0)
+            in_front = ndc_z > 0
+            # NDC -> pixel: x right, y down; NDC x,y in [-1,1]
+            u = ((ndc_x + 1.0) * 0.5 * (W - 1)).long().clamp(0, W - 1)
+            v = ((1.0 - ndc_y) * 0.5 * (H - 1)).long().clamp(0, H - 1)
+            mask_val = mask[0, v, u]  # (N,)
+            inside_mask = (mask_val > 0.5) & in_front
+            inside_any = inside_any | inside_mask
+
+        to_remove = ~inside_any
+        n_remove = to_remove.sum().item()
+        if n_remove > 0:
+            self.gaussians.prune_points(to_remove)
+            if self.surface_confidence is not None and self.surface_confidence.shape[0] == N:
+                self.surface_confidence = self.surface_confidence[~to_remove]
+        return True
+
+    @torch.no_grad()
     def finalPrune(self) -> bool:
         my_viewpoint_stack = self.scene.train_cameras
         camlist = sampling_cameras(my_viewpoint_stack)
@@ -433,6 +479,9 @@ class Trainer(object):
             # You can check the rendering results of 20K iterations in arxiv version (https://arxiv.org/abs/2511.04283), the rendering quality is already very good.
             if iteration % 3000 == 0 and iteration > 15_000 and iteration < 30_000:
                 self.finalPrune()
+
+            # 每个 step 删除不在任一 mask 内的 gaussian
+            # self.pruneGaussiansOutsideMasks()
 
             self.updateGSParams(iteration)
 

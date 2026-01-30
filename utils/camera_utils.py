@@ -38,7 +38,19 @@ def loadCam(args, id, cam_info, resolution_scale):
         scale = float(global_down) * float(resolution_scale)
         resolution = (int(orig_w / scale), int(orig_h / scale))
 
-    if len(cam_info.image.split()) > 3:
+    # RGB from image; mask from masks folder (cam_info.mask_image) or 4th channel of image
+    if getattr(cam_info, 'mask_image', None) is not None:
+        # 3-channel mask from masks folder: convert to single channel (max across R,G,B), >0.5 as inside
+        mask_pil = cam_info.mask_image
+        mask_arr = np.array(mask_pil)
+        if mask_arr.ndim == 3:
+            mask_arr = np.max(mask_arr, axis=2).astype(np.uint8)
+        from PIL import Image as PILImage
+        mask_pil = PILImage.fromarray(mask_arr)
+        resized_image_rgb = PILtoTorch(cam_info.image, resolution)
+        loaded_mask = PILtoTorch(mask_pil, resolution)
+        gt_image = resized_image_rgb
+    elif len(cam_info.image.split()) > 3:
         import torch
         resized_image_rgb = torch.cat([PILtoTorch(im, resolution) for im in cam_info.image.split()[:3]], dim=0)
         loaded_mask = PILtoTorch(cam_info.image.split()[3], resolution)

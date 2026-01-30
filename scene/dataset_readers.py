@@ -5,7 +5,7 @@ import numpy as np
 
 from PIL import Image
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 from plyfile import PlyData, PlyElement
 
 from utils.graphics_utils import BasicPointCloud
@@ -24,6 +24,7 @@ class CameraInfo(NamedTuple):
     image_name: str
     width: int
     height: int
+    mask_image: Optional[object] = None  # PIL Image, 3-channel mask from masks folder
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -54,7 +55,16 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
+def _load_mask_from_folder(masks_folder, image_basename_no_ext, image_ext):
+    """Try to load 3-channel mask from masks_folder with same basename. Returns PIL Image or None."""
+    for ext in [image_ext, '.png', '.jpg', '.jpeg', '.PNG', '.JPG']:
+        mask_path = os.path.join(masks_folder, image_basename_no_ext + ext)
+        if os.path.isfile(mask_path):
+            return Image.open(mask_path)
+    return None
+
+
+def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, masks_folder=None):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
@@ -85,10 +95,16 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
 
         image_path = os.path.join(images_folder, os.path.basename(extr.name))
         image_name = os.path.basename(image_path).split(".")[0]
+        image_ext = os.path.splitext(extr.name)[1]
         image = Image.open(image_path)
 
+        mask_image = None
+        if masks_folder and os.path.isdir(masks_folder):
+            mask_image = _load_mask_from_folder(masks_folder, image_name, image_ext)
+
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                              image_path=image_path, image_name=image_name, width=width, height=height)
+                              image_path=image_path, image_name=image_name, width=width, height=height,
+                              mask_image=mask_image)
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
     return cam_infos
@@ -118,7 +134,7 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, images):
+def readColmapSceneInfo(path, images, masks=None):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -131,7 +147,10 @@ def readColmapSceneInfo(path, images):
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
     reading_dir = "images" if images == None else images
-    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir))
+    masks_dir = os.path.join(path, masks) if masks else None
+    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics,
+                                           images_folder=os.path.join(path, reading_dir),
+                                           masks_folder=masks_dir)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
     train_cam_infos = cam_infos
