@@ -48,10 +48,6 @@ class Trainer(object):
         args = parser.parse_args(sys.argv[1:])
 
         args.source_path = colmap_data_folder_path
-        args.images = 'images'
-        args.masks = 'masks'
-        args.white_background = True
-        args.resolution = 2
         args.model_path = save_result_folder_path
 
         print("Optimizing " + args.model_path)

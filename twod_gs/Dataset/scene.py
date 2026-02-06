@@ -31,8 +31,7 @@ class Scene:
 
         self.train_cameras = {}
 
-        masks_folder = getattr(args, 'masks', None)
-        scene_info = readColmapSceneInfo(args.source_path, args.images, masks_folder)
+        scene_info = readColmapSceneInfo(args.source_path, args.images)
 
         if not self.loaded_iter:
             with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
