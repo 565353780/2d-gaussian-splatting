@@ -1,11 +1,10 @@
 import torch
 import random
 
-from fused_ssim import fused_ssim as fast_ssim
-
-from gaussian_renderer import render
+from fused_ssim import fused_ssim
 
 from twod_gs.Loss.l1 import l1_loss
+from twod_gs.Method.render_kernel import render
 
 
 def sampling_cameras(my_viewpoint_stack):
@@ -30,7 +29,7 @@ def get_loss(reconstructed_image, original_image):
 def compute_photometric_loss(viewpoint_cam, image):
     gt_image = viewpoint_cam.original_image.cuda()
     Ll1 = l1_loss(image, gt_image)
-    loss = (1.0 - 0.2) * Ll1 + 0.2 * (1.0 - fast_ssim(image.unsqueeze(0), gt_image.unsqueeze(0)))
+    loss = (1.0 - 0.2) * Ll1 + 0.2 * (1.0 - fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0)))
     return loss
 
 def normalize(config_value, value_tensor):

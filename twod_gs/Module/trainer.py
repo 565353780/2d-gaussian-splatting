@@ -13,11 +13,11 @@ from fused_ssim import fused_ssim
 
 from utils.general_utils import safe_state, inverse_sigmoid
 from utils.mesh_utils import GaussianExtractor, post_process_mesh
-from arguments import ModelParams, PipelineParams, OptimizationParams
 
 from base_trainer.Module.logger import Logger
 from base_trainer.Module.base_trainer import BaseTrainer
 
+from twod_gs.Config.config import ModelParams, PipelineParams, OptimizationParams
 from twod_gs.Lib.lpipsPyTorch import lpips
 from twod_gs.Loss.l1 import l1_loss
 from twod_gs.Metric.psnr import psnr

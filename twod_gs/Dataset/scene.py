@@ -2,11 +2,11 @@ import os
 import json
 import random
 
-from arguments import ModelParams
 from utils.system_utils import searchForMaxIteration
 from scene.dataset_readers import readColmapSceneInfo
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
 
+from twod_gs.Config.config import ModelParams
 from twod_gs.Model.gs import GaussianModel
 
 
