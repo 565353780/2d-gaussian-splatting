@@ -3,16 +3,15 @@ import torch
 
 from diff_surfel_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 
-from utils.sh_utils import eval_sh
-from utils.point_utils import depth_to_normal
-
 from twod_gs.Model.gs import GaussianModel
+from twod_gs.Method.sh_utils import eval_sh
+from twod_gs.Method.point_utils import depth_to_normal
 
 
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, get_flag = None, metric_map = None):
     """
-    Render the scene. 
-    
+    Render the scene.
+
     Background tensor (bg_color) must be on GPU!
     """
  

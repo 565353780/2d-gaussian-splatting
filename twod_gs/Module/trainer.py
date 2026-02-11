@@ -7,21 +7,21 @@ from torch import nn
 from tqdm import tqdm
 from typing import Tuple
 from copy import deepcopy
+from argparse import ArgumentParser
 
-from lpipsPyTorch import lpips
-from fused_ssim import fused_ssim as fast_ssim
+from fused_ssim import fused_ssim
 
-from gaussian_renderer import render
 from utils.general_utils import safe_state, inverse_sigmoid
 from utils.mesh_utils import GaussianExtractor, post_process_mesh
-from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, OptimizationParams
 
 from base_trainer.Module.logger import Logger
 from base_trainer.Module.base_trainer import BaseTrainer
 
+from twod_gs.Lib.lpipsPyTorch import lpips
 from twod_gs.Loss.l1 import l1_loss
 from twod_gs.Metric.psnr import psnr
+from twod_gs.Method.render_kernel import render
 from twod_gs.Method.fast_utils import sampling_cameras, compute_gaussian_score_fastgs
 from twod_gs.Dataset.scene import Scene
 from twod_gs.Model.gs import GaussianModel
@@ -111,7 +111,7 @@ class Trainer(object):
 
         gt_image = viewpoint_cam.original_image.cuda()
         reg_loss = l1_loss(image, gt_image)
-        ssim_loss = 1.0 - fast_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+        ssim_loss = 1.0 - fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
         rgb_loss = (1.0 - lambda_dssim) * reg_loss + lambda_dssim * ssim_loss
 
         lambda_normal = lambda_normal if iteration > 1000 else 0.0
@@ -314,7 +314,7 @@ class Trainer(object):
 
                     l1_test += l1_loss(image, gt_image).mean().double()
                     psnr_test += psnr(image, gt_image).mean().double()
-                    ssim_test += fast_ssim(image.unsqueeze(0), gt_image.unsqueeze(0)).mean().double()
+                    ssim_test += fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0)).mean().double()
                     lpips_test += lpips(image, gt_image, net_type='vgg').mean().double()
 
                 psnr_test /= len(config['cameras'])
