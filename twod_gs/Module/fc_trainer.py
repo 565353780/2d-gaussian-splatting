@@ -1,6 +1,5 @@
 import os
 import sys
-sys.path.append('../../../camera-control/')
 import torch
 import open3d as o3d
 
@@ -273,6 +272,7 @@ class FCTrainer(BaseGSTrainer):
 
             fc_normal_loss = l1_loss(fc_normal, rend_normal)
 
+            '''
             fc_depth = NVDiffRastRenderer.renderDepth(
                 fc_mesh,
                 viewpoint_cam._cam,
@@ -283,6 +283,7 @@ class FCTrainer(BaseGSTrainer):
             rend_depth = render_pkg['rend_depth']
 
             fc_depth_loss = l1_loss(fc_depth, rend_depth)
+            '''
 
             if L_dev is not None and L_dev.numel() > 0:
                 dev_loss = L_dev.mean()
@@ -577,9 +578,9 @@ class FCTrainer(BaseGSTrainer):
                     is_fast=True,
                 )
 
-            if iteration % self.save_freq == 0:
-                print("\n[ITER {}] Saving Gaussians".format(iteration))
-                self.saveScene(iteration)
+                if iteration % self.save_freq == 0:
+                    print("\n[ITER {}] Saving Gaussians".format(iteration))
+                    self.saveScene(iteration)
 
             # Densification
             if iteration < self.opt.densify_until_iter:
