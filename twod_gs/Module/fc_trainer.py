@@ -4,9 +4,9 @@ import torch
 import open3d as o3d
 
 from torch import nn
-from tqdm import tqdm
 from typing import Tuple
 from copy import deepcopy
+from tqdm import tqdm, trange
 from argparse import ArgumentParser
 
 from fused_ssim import fused_ssim
@@ -15,7 +15,8 @@ from utils.general_utils import inverse_sigmoid
 from utils.mesh_utils import GaussianExtractor, post_process_mesh
 
 from base_gs_trainer.Loss.l1 import l1_loss
-#from base_gs_trainer.Loss.chamfer import chamferLossFn
+from base_gs_trainer.Method.general_utils import colormap
+from base_gs_trainer.Loss.chamfer import chamferLossFn
 from base_gs_trainer.Module.base_gs_trainer import BaseGSTrainer
 
 from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
@@ -102,7 +103,7 @@ class FCTrainer(BaseGSTrainer):
 
         self.fc_optimizer = torch.optim.Adam(param_groups)
 
-        #self.chamfer_func = chamferLossFn(self.device)
+        self.chamfer_func = chamferLossFn(self.device)
 
         self.E_thinplate_base = None
         return
@@ -264,8 +265,10 @@ class FCTrainer(BaseGSTrainer):
             )['depth']
             '''
 
+            '''
             if L_dev is not None and L_dev.numel() > 0:
                 dev_loss = L_dev.mean()
+            '''
 
             dists1, dists2 = self.chamfer_func(
                 vertices.unsqueeze(0),
@@ -304,7 +307,7 @@ class FCTrainer(BaseGSTrainer):
         total_loss.backward()
 
         if iteration % 100 == 0:
-            self.fc_optimizer.step()
+            #self.fc_optimizer.step()
             self.fc_optimizer.zero_grad()
 
         loss_dict = {
@@ -354,6 +357,68 @@ class FCTrainer(BaseGSTrainer):
                         viewpoint._cam,
                     )['image'].permute(2, 0, 1)
                     self.logger.summary_writer.add_images("view_{}/fc_depth".format(viewpoint.image_name), fc_depth[None], global_step=iteration)
+        return True
+
+    @torch.no_grad()
+    def recordGaussianState(
+        self,
+        iteration: int=0,
+        record_num: int=-1,
+    ) -> bool:
+        if record_num == 0:
+            return True
+
+        fc_mesh = self.extractMesh()[0]
+
+        print('[INFO][FCTrainer::recordGaussianState]')
+        print('\t start record gaussian state...')
+
+        if record_num < 0:
+            record_num = len(self.scene)
+
+        for idx in trange(record_num):
+            viewpoint = self.scene[idx]
+            render_pkg = self.renderImage(viewpoint)
+            image = torch.clamp(render_pkg["render"], 0.0, 1.0)
+            gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
+            self.logger.summary_writer.add_images("view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
+
+            try:
+                depth = render_pkg["surf_depth"]
+                norm = depth.max()
+                depth = depth / norm
+                depth = colormap(depth.cpu().numpy()[0], cmap='turbo')
+                self.logger.summary_writer.add_images("view_{}/depth".format(viewpoint.image_name), depth[None], global_step=iteration)
+            except:
+                pass
+
+            try:
+                rend_alpha = render_pkg['rend_alpha']
+                rend_normal = render_pkg["rend_normal"] * 0.5 + 0.5
+                surf_normal = render_pkg["surf_normal"] * 0.5 + 0.5
+                self.logger.summary_writer.add_images("view_{}/rend_normal".format(viewpoint.image_name), rend_normal[None], global_step=iteration)
+                self.logger.summary_writer.add_images("view_{}/surf_normal".format(viewpoint.image_name), surf_normal[None], global_step=iteration)
+                self.logger.summary_writer.add_images("view_{}/rend_alpha".format(viewpoint.image_name), rend_alpha[None], global_step=iteration)
+
+                rend_dist = render_pkg["rend_dist"]
+                rend_dist = colormap(rend_dist.cpu().numpy()[0])
+                self.logger.summary_writer.add_images("view_{}/rend_dist".format(viewpoint.image_name), rend_dist[None], global_step=iteration)
+            except:
+                pass
+
+            self.logger.summary_writer.add_images("view_{}/GT".format(viewpoint.image_name), gt_image[None], global_step=iteration)
+
+            fc_normal = NVDiffRastRenderer.renderNormal(
+                fc_mesh,
+                viewpoint._cam,
+            )['normal_world'].permute(2, 0, 1)
+            self.logger.summary_writer.add_images("view_{}/fc_normal".format(viewpoint.image_name), fc_normal[None], global_step=iteration)
+
+            fc_depth = NVDiffRastRenderer.renderDepth(
+                fc_mesh,
+                viewpoint._cam,
+            )['image'].permute(2, 0, 1)
+            self.logger.summary_writer.add_images("view_{}/fc_depth".format(viewpoint.image_name), fc_depth[None], global_step=iteration)
         return True
 
     @torch.no_grad()
@@ -463,6 +528,9 @@ class FCTrainer(BaseGSTrainer):
     def train(self, iteration_num: int = 30000):
         progress_bar = tqdm(desc="Training progress", total=iteration_num)
         iteration = 0
+
+        self.recordGaussianState(iteration, record_num=1)
+
         for _ in range(iteration_num):
             iteration += 1
 

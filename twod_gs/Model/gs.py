@@ -11,7 +11,12 @@ from base_gs_trainer.Method.sh_utils import RGB2SH
 from base_gs_trainer.Data.basic_point_cloud import BasicPointCloud
 
 from utils.general_utils import build_scaling_rotation
-from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
+from utils.general_utils import (
+    inverse_sigmoid,
+    get_expon_lr_func,
+    build_rotation,
+    quaternion_from_normal,
+)
 
 
 class GaussianModel:
@@ -139,7 +144,11 @@ class GaussianModel:
 
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 2)
-        rots = torch.rand((fused_point_cloud.shape[0], 4), device="cuda")
+        if pcd.normals is not None and len(pcd.normals) == fused_point_cloud.shape[0]:
+            normals = torch.tensor(np.asarray(pcd.normals)).float().cuda()
+            rots = quaternion_from_normal(normals)
+        else:
+            rots = torch.rand((fused_point_cloud.shape[0], 4), device="cuda")
 
         opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
@@ -424,7 +433,7 @@ class GaussianModel:
 
     def densify_and_clone_fastgs(self, metric_mask, filter):
         selected_pts_mask = torch.logical_and(metric_mask, filter)
-        
+
         new_xyz = self._xyz[selected_pts_mask]
         new_features_dc = self._features_dc[selected_pts_mask]
         new_features_rest = self._features_rest[selected_pts_mask]
@@ -485,7 +494,7 @@ class GaussianModel:
             selected_pts_mask[sampled_indices] = True
             final_prune = torch.logical_and(prune_mask, selected_pts_mask)
             self.prune_points(final_prune)
-        
+
         opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.8))
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]

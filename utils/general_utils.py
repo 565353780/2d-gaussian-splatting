@@ -54,6 +54,33 @@ def strip_lowerdiag(L):
 def strip_symmetric(sym):
     return strip_lowerdiag(sym)
 
+def quaternion_from_normal(normals):
+    """
+    将法线向量转换为四元数 (w, x, y, z)，表示从 (0,0,1) 旋转到法线朝向的旋转。
+    normals: (N, 3) 已归一化的法线，或会在内部归一化。
+    returns: (N, 4) 四元数，与 build_rotation 使用的格式一致。
+    """
+    n = normals / (torch.norm(normals, dim=-1, keepdim=True) + 1e-8)
+    nz = n[:, 2]
+    nx = n[:, 0]
+    ny = n[:, 1]
+    # 从 (0,0,1) 到 n 的旋转：轴 axis = (0,0,1) × n = (-ny, nx, 0)，角 θ = arccos(nz)
+    # q_w = cos(θ/2) = sqrt((1+nz)/2), q_xyz = sin(θ/2) * axis/|axis|
+    one_plus_nz = 1.0 + nz
+    eps = 1e-6
+    # 当 n_z ≈ 1：恒等旋转，q = (1,0,0,0)
+    # 当 n_z ≈ -1：轴退化，取 180° 绕 x 轴，q = (0,1,0,0)
+    axis_len = torch.sqrt(1.0 - nz * nz).clamp(min=eps)
+    sin_half = torch.sqrt((1.0 - nz).clamp(min=0) / 2.0)
+    qw = torch.sqrt((one_plus_nz).clamp(min=0) / 2.0)
+    qx = torch.where(one_plus_nz > eps, -ny * sin_half / axis_len, torch.ones_like(nx))
+    qy = torch.where(one_plus_nz > eps, nx * sin_half / axis_len, torch.zeros_like(ny))
+    qz = torch.where(one_plus_nz > eps, torch.zeros_like(nz), torch.zeros_like(nz))
+    qw = torch.where(one_plus_nz < eps, torch.zeros_like(qw), qw)
+    q = torch.stack([qw, qx, qy, qz], dim=-1)
+    return q / (torch.norm(q, dim=-1, keepdim=True) + 1e-8)
+
+
 def build_rotation(r):
     norm = torch.sqrt(r[:,0]*r[:,0] + r[:,1]*r[:,1] + r[:,2]*r[:,2] + r[:,3]*r[:,3])
 
