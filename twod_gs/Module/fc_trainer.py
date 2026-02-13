@@ -40,11 +40,13 @@ class FCTrainer(BaseGSTrainer):
         device: str='cuda:0',
         save_result_folder_path: str='./output/',
         save_log_folder_path: str='./logs/',
-        test_freq: int=10000,
-        save_freq: int=10000,
-        fc_update_freq: int=100,
+        test_freq: int=100,
+        save_freq: int=100,
+        fc_update_freq: int=1,
+        log_start_iter: int=0,
     ) -> None:
         self.fc_update_freq = fc_update_freq
+        self.log_start_iter = log_start_iter
 
         # Set up command line argument parser
         parser = ArgumentParser(description="Training script parameters")
@@ -93,9 +95,11 @@ class FCTrainer(BaseGSTrainer):
             device=self.device,
         )
 
-        lr_sdf  = 0.01
-        lr_deform = 0.01
-        lr_weight = 0.01
+        self.extractMesh()[0].export(self.save_result_folder_path + 'start_fc_mesh.ply')
+
+        lr_sdf  = 1e-3
+        lr_deform = 1e-3
+        lr_weight = 1e-3
         param_groups = [
             dict(params=[self.fc_params['sdf']], lr=lr_sdf),
             dict(params=[self.fc_params['deform']], lr=lr_deform),
@@ -254,22 +258,18 @@ class FCTrainer(BaseGSTrainer):
         # FlexiCubes developability 正则化损失
         dev_loss = torch.tensor(0.0, device=self.device)
         fc_normal_loss = torch.tensor(0.0, device=self.device)
-        fc_depth_loss = torch.tensor(0.0, fc_depthice=self.device)
+        fc_depth_loss = torch.tensor(0.0, device=self.device)
         chamfer_loss = torch.tensor(0.0, device=self.device)
-        if iteration % self.fc_update_freq == 0:
+        if iteration > 1500 and iteration % self.fc_update_freq == 0:
             fc_mesh, vertices, L_dev = self.extractMesh()
-
-            if iteration == 1:
-                fc_mesh.export(self.save_result_folder_path + 'start_fc_mesh.ply')
 
             fc_normal = NVDiffRastRenderer.renderNormal(
                 fc_mesh,
                 viewpoint_cam._cam,
-                bg_color=[0, 0, 0],
                 vertices_tensor=vertices,
-            )['normal_world']
+            )['world']
 
-            rend_normal  = render_pkg['rend_normal']
+            rend_normal  = render_pkg['rend_normal'].permute(1, 2, 0)
 
             fc_normal_loss = l1_loss(fc_normal, rend_normal)
 
@@ -318,8 +318,8 @@ class FCTrainer(BaseGSTrainer):
 
         total_loss.backward()
 
-        if iteration % 100 == 0:
-            #self.fc_optimizer.step()
+        if iteration > 1500 and iteration % self.fc_update_freq == 0:
+            self.fc_optimizer.step()
             self.fc_optimizer.zero_grad()
 
         loss_dict = {
@@ -370,13 +370,13 @@ class FCTrainer(BaseGSTrainer):
                     fc_normal = NVDiffRastRenderer.renderNormal(
                         fc_mesh,
                         viewpoint._cam,
-                    )['normal_world'].permute(2, 0, 1)
+                    )['rgb_world'].permute(2, 0, 1)
                     self.logger.summary_writer.add_images("view_{}/fc_normal".format(viewpoint.image_name), fc_normal[None], global_step=iteration)
 
                     fc_depth = NVDiffRastRenderer.renderDepth(
                         fc_mesh,
                         viewpoint._cam,
-                    )['image'].permute(2, 0, 1)
+                    )['rgb'].permute(2, 0, 1)
                     self.logger.summary_writer.add_images("view_{}/fc_depth".format(viewpoint.image_name), fc_depth[None], global_step=iteration)
         return True
 
@@ -432,13 +432,13 @@ class FCTrainer(BaseGSTrainer):
             fc_normal = NVDiffRastRenderer.renderNormal(
                 fc_mesh,
                 viewpoint._cam,
-            )['normal_world'].permute(2, 0, 1)
+            )['rgb_world'].permute(2, 0, 1)
             self.logger.summary_writer.add_images("view_{}/fc_normal".format(viewpoint.image_name), fc_normal[None], global_step=iteration)
 
             fc_depth = NVDiffRastRenderer.renderDepth(
                 fc_mesh,
                 viewpoint._cam,
-            )['image'].permute(2, 0, 1)
+            )['rgb'].permute(2, 0, 1)
             self.logger.summary_writer.add_images("view_{}/fc_depth".format(viewpoint.image_name), fc_depth[None], global_step=iteration)
         return True
 
@@ -569,12 +569,13 @@ class FCTrainer(BaseGSTrainer):
                 progress_bar.set_postfix(bar_loss_dict)
                 progress_bar.update(10)
 
-            self.logStep(
-                iteration,
-                loss_dict,
-                render_image_num=1,
-                is_fast=True,
-            )
+            if iteration >= self.log_start_iter:
+                self.logStep(
+                    iteration,
+                    loss_dict,
+                    render_image_num=1,
+                    is_fast=True,
+                )
 
             if iteration % self.save_freq == 0:
                 print("\n[ITER {}] Saving Gaussians".format(iteration))

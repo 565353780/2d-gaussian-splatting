@@ -155,16 +155,10 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     # remember to multiply with accum_alpha since render_normal is unnormalized.
     surf_normal = surf_normal * (render_alpha).detach()
 
-    # 背景区域设为纯白 (1,1,1)，便于可视化和与前景区分
-    bg_mask = (render_alpha < 1e-4).squeeze(0)  # (H, W)
-    white_bg = torch.ones_like(render_normal, device=render_normal.device, dtype=render_normal.dtype)
-    render_normal = torch.where(bg_mask.unsqueeze(0), white_bg, render_normal)
-    surf_normal = torch.where(bg_mask.unsqueeze(0), white_bg, surf_normal)
-
     rets.update({
             'rend_alpha': render_alpha,
             'rend_normal': render_normal,
-            'rend_depth': render_depth_expected,
+            'rend_depth': render_depth_expected[0],
             'rend_dist': render_dist,
             'surf_depth': surf_depth,
             'surf_normal': surf_normal,
