@@ -15,7 +15,7 @@ from utils.general_utils import inverse_sigmoid
 from utils.mesh_utils import GaussianExtractor, post_process_mesh
 
 from base_gs_trainer.Loss.l1 import l1_loss
-from base_gs_trainer.Loss.chamfer import chamferLossFn
+#from base_gs_trainer.Loss.chamfer import chamferLossFn
 from base_gs_trainer.Module.base_gs_trainer import BaseGSTrainer
 
 from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
@@ -102,7 +102,7 @@ class FCTrainer(BaseGSTrainer):
 
         self.fc_optimizer = torch.optim.Adam(param_groups)
 
-        self.chamfer_func = chamferLossFn(self.device)
+        #self.chamfer_func = chamferLossFn(self.device)
 
         self.E_thinplate_base = None
         return
@@ -456,6 +456,8 @@ class FCTrainer(BaseGSTrainer):
     def saveScene(self, iteration: int) -> bool:
         point_cloud_path = os.path.join(self.dataset.model_path, "point_cloud/iteration_{}".format(iteration))
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+        fc_mesh = self.extractMesh()[0]
+        fc_mesh.export(os.path.join(point_cloud_path, 'fc_mesh.ply'))
         return True
 
     def train(self, iteration_num: int = 30000):
