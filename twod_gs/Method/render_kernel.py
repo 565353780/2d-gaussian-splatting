@@ -3,8 +3,9 @@ import torch
 
 from diff_surfel_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 
+from base_gs_trainer.Method.sh_utils import eval_sh
+
 from twod_gs.Model.gs import GaussianModel
-from twod_gs.Method.sh_utils import eval_sh
 from twod_gs.Method.point_utils import depth_to_normal
 
 

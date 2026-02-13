@@ -3,7 +3,8 @@ import random
 
 from fused_ssim import fused_ssim
 
-from twod_gs.Loss.l1 import l1_loss
+from base_gs_trainer.Loss.l1 import l1_loss
+
 from twod_gs.Method.render_kernel import render
 
 

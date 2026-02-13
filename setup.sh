@@ -1,19 +1,14 @@
 cd ..
-git clone https://github.com/565353780/base-trainer.git
+git clone https://github.com/565353780/base-gs-trainer.git
 #git clone git@github.com:565353780/sibr-core.git
-git clone --depth 1 https://github.com/camenduru/simple-knn.git
 
-cd base-trainer
+cd base-gs-trainer
 ./setup.sh
 
 #cd ../sibr-core
 #./setup.sh
 
-cd ../simple-knn
-python setup.py install
-
-pip install ffmpeg pillow mediapy lpips scikit-image \
-  plyfile opencv-python ninja
+pip install ffmpeg pillow mediapy lpips scikit-image
 
 cd ../2d-gaussian-splatting/twod_gs/Lib/diff-surfel-rasterization
 python setup.py install

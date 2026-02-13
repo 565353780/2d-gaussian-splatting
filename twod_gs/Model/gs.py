@@ -7,12 +7,11 @@ from plyfile import PlyData, PlyElement
 
 from simple_knn._C import distCUDA2
 
-from utils.system_utils import mkdir_p
-from utils.graphics_utils import BasicPointCloud
+from base_gs_trainer.Method.sh_utils import RGB2SH
+from base_gs_trainer.Data.basic_point_cloud import BasicPointCloud
+
 from utils.general_utils import build_scaling_rotation
 from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
-
-from twod_gs.Method.sh_utils import RGB2SH
 
 
 class GaussianModel:
@@ -218,7 +217,7 @@ class GaussianModel:
         return l
 
     def save_ply(self, path):
-        mkdir_p(os.path.dirname(path))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
 
         xyz = self._xyz.detach().cpu().numpy()
         normals = np.zeros_like(xyz)

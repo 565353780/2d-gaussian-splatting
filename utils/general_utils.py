@@ -1,31 +1,9 @@
-#
-# Copyright (C) 2023, Inria
-# GRAPHDECO research group, https://team.inria.fr/graphdeco
-# All rights reserved.
-#
-# This software is free for non-commercial, research and evaluation use 
-# under the terms of the LICENSE.md file.
-#
-# For inquiries contact  george.drettakis@inria.fr
-#
-
-import sys
 import torch
-import random
 import numpy as np
-import matplotlib.pyplot as plt
-from datetime import datetime
+
 
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
-
-def PILtoTorch(pil_image, resolution):
-    resized_image_PIL = pil_image.resize(resolution)
-    resized_image = torch.from_numpy(np.array(resized_image_PIL)) / 255.0
-    if len(resized_image.shape) == 3:
-        return resized_image.permute(2, 0, 1)
-    else:
-        return resized_image.unsqueeze(dim=-1).permute(2, 0, 1)
 
 def get_expon_lr_func(
     lr_init, lr_final, lr_delay_steps=0, lr_delay_mult=1.0, max_steps=1000000
@@ -110,32 +88,6 @@ def build_scaling_rotation(s, r):
     L = R @ L
     return L
 
-def safe_state(silent):
-    old_f = sys.stdout
-    class F:
-        def __init__(self, silent):
-            self.silent = silent
-
-        def write(self, x):
-            if not self.silent:
-                if x.endswith("\n"):
-                    old_f.write(x.replace("\n", " [{}]\n".format(str(datetime.now().strftime("%d/%m %H:%M:%S")))))
-                else:
-                    old_f.write(x)
-
-        def flush(self):
-            old_f.flush()
-
-    sys.stdout = F(silent)
-
-    random.seed(0)
-    np.random.seed(0)
-    torch.manual_seed(0)
-    torch.cuda.set_device(torch.device("cuda:0"))
-
-
-
-
 def create_rotation_matrix_from_direction_vector_batch(direction_vectors):
     # Normalize the batch of direction vectors
     direction_vectors = direction_vectors / torch.norm(direction_vectors, dim=-1, keepdim=True)
@@ -153,26 +105,3 @@ def create_rotation_matrix_from_direction_vector_batch(direction_vectors):
     # Create the batch of rotation matrices with the direction vectors as the last columns
     rotation_matrices = torch.stack((v1, v2, direction_vectors), dim=-1)
     return rotation_matrices
-
-# from kornia.geometry import conversions
-# def normal_to_rotation(normals):
-#     rotations = create_rotation_matrix_from_direction_vector_batch(normals)
-#     rotations = conversions.rotation_matrix_to_quaternion(rotations,eps=1e-5, order=conversions.QuaternionCoeffOrder.WXYZ)
-#     return rotations
-
-
-def colormap(img, cmap='jet'):
-    W, H = img.shape[:2]
-    dpi = 300
-    fig, ax = plt.subplots(1, figsize=(H/dpi, W/dpi), dpi=dpi)
-    im = ax.imshow(img, cmap=cmap)
-    ax.set_axis_off()
-    fig.colorbar(im, ax=ax)
-    fig.tight_layout()
-    fig.canvas.draw()
-    # Use buffer_rgba for compatibility with newer matplotlib versions
-    data = np.asarray(fig.canvas.buffer_rgba())
-    data = data[..., :3]  # drop alpha channel
-    img = torch.from_numpy(data / 255.).float().permute(2,0,1)
-    plt.close()
-    return img
