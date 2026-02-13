@@ -331,12 +331,19 @@ class FCTrainer(BaseGSTrainer):
         return render_pkg, loss_dict
 
     @torch.no_grad
-    def logStep(self, iteration: int, loss_dict: dict, render_image_num: int=5) -> bool:
+    def logStep(
+        self,
+        iteration: int,
+        loss_dict: dict,
+        render_image_num: int=5,
+        is_fast: bool=False,
+    ) -> bool:
         BaseGSTrainer.logStep(
             self,
             iteration=iteration,
             loss_dict=loss_dict,
             render_image_num=render_image_num,
+            is_fast=is_fast,
         )
 
         if iteration % self.test_freq == 0:
@@ -548,7 +555,7 @@ class FCTrainer(BaseGSTrainer):
                 progress_bar.set_postfix(bar_loss_dict)
                 progress_bar.update(10)
 
-            self.logStep(iteration, loss_dict)
+            self.logStep(iteration, loss_dict, is_fast=True)
 
             if iteration % self.save_freq == 0:
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
