@@ -327,6 +327,35 @@ class FCTrainer(BaseGSTrainer):
 
         return render_pkg, loss_dict
 
+    @torch.no_grad
+    def logStep(self, iteration: int, loss_dict: dict, render_image_num: int=5) -> bool:
+        BaseGSTrainer.logStep(
+            self,
+            iteration=iteration,
+            loss_dict=loss_dict,
+            render_image_num=render_image_num,
+        )
+
+        if iteration % self.test_freq == 0:
+            torch.cuda.empty_cache()
+            cameras = [self.scene[idx % len(self.scene)] for idx in range(5, 30, 5)]
+
+            fc_mesh = self.extractMesh()[0]
+            for idx, viewpoint in enumerate(cameras):
+                if self.logger.isValid() and (idx < render_image_num):
+                    fc_normal = NVDiffRastRenderer.renderNormal(
+                        fc_mesh,
+                        viewpoint._cam,
+                    )['normal_world'].permute(2, 0, 1)
+                    self.logger.summary_writer.add_images("view_{}/fc_normal".format(viewpoint.image_name), fc_normal[None], global_step=iteration)
+
+                    fc_depth = NVDiffRastRenderer.renderDepth(
+                        fc_mesh,
+                        viewpoint._cam,
+                    )['image'].permute(2, 0, 1)
+                    self.logger.summary_writer.add_images("view_{}/fc_depth".format(viewpoint.image_name), fc_depth[None], global_step=iteration)
+        return True
+
     @torch.no_grad()
     def recordGrads(self, render_pkg: dict) -> bool:
         viewspace_point_tensor, visibility_filter, radii = render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
