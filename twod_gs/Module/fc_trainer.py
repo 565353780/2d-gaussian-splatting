@@ -363,11 +363,12 @@ class FCTrainer(BaseGSTrainer):
 
         if iteration % self.test_freq == 0:
             torch.cuda.empty_cache()
-            cameras = [self.scene[idx % len(self.scene)] for idx in range(5, 30, 5)]
 
             fc_mesh = self.extractMesh()[0]
-            for idx, viewpoint in enumerate(cameras):
-                if self.logger.isValid() and (idx < render_image_num):
+            for idx in trange(render_image_num):
+                viewpoint = self.scene[idx]
+
+                if self.logger.isValid():
                     fc_normal = NVDiffRastRenderer.renderNormal(
                         fc_mesh,
                         viewpoint._cam,
