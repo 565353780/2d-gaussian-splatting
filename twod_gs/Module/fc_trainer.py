@@ -4,9 +4,9 @@ import torch
 import open3d as o3d
 
 from torch import nn
+from tqdm import trange
 from typing import Tuple
 from copy import deepcopy
-from tqdm import tqdm, trange
 from argparse import ArgumentParser
 
 from fused_ssim import fused_ssim
@@ -15,6 +15,7 @@ from utils.general_utils import inverse_sigmoid
 from utils.mesh_utils import GaussianExtractor, post_process_mesh
 
 from base_gs_trainer.Loss.l1 import l1_loss
+from base_gs_trainer.Method.path import createFileFolder
 from base_gs_trainer.Method.general_utils import colormap
 from base_gs_trainer.Loss.chamfer import chamferLossFn
 from base_gs_trainer.Module.base_gs_trainer import BaseGSTrainer
@@ -291,90 +292,101 @@ class FCTrainer(BaseGSTrainer):
         lambda_fc_depth: float = 0.1,
         lambda_chamfer: float = 1.0,
         lambda_thin_plate: float = 0.1,
+        camera_batch_size: int = 4,
     ) -> dict:
         camera_num = len(self.scene)
+        camera_batch_size = min(camera_batch_size, camera_num)
+        num_batches = (camera_num + camera_batch_size - 1) // camera_batch_size
 
-        dev_loss = torch.tensor(0.0, device=self.device)
-        fc_normal_loss = torch.tensor(0.0, device=self.device)
-        fc_depth_loss = torch.tensor(0.0, device=self.device)
-        chamfer_loss = torch.tensor(0.0, device=self.device)
-        thinplate_loss = torch.tensor(0.0, device=self.device)
+        # 用于记录标量 loss（仅日志），不参与反向
+        sum_fc_normal = 0.0
+        sum_fc_depth = 0.0
+        sum_dev = 0.0
+        sum_chamfer = 0.0
+        sum_thinplate = 0.0
 
-        fc_mesh, vertices, L_dev = self.extractMesh()
-
-        print('[INFO][FCTrainer::trainFCStep]')
-        print('\t start match fc to 2dgs normal and depth...')
-        for i in trange(camera_num):
-            viewpoint = self.scene[i]
-
-            with torch.no_grad():
-                render_pkg = self.renderImage(viewpoint)
-
-                for key, value in render_pkg.items():
-                    render_pkg[key] = value.detach()
-
-            fc_normal = NVDiffRastRenderer.renderNormal(
-                fc_mesh,
-                viewpoint._cam,
-                vertices_tensor=vertices,
-            )['world']
-
-            rend_normal  = render_pkg['rend_normal'].permute(1, 2, 0)
-
-            fc_normal_loss = fc_normal_loss + l1_loss(fc_normal, rend_normal)
-
-            fc_depth = NVDiffRastRenderer.renderDepth(
-                fc_mesh,
-                viewpoint._cam,
-                bg_color=[0, 0, 0],
-                vertices_tensor=vertices,
-            )['depth']
-
-            rend_depth = render_pkg['rend_depth']
-
-            fc_depth_loss = fc_depth_loss + l1_loss(fc_depth, rend_depth)
-
-            if L_dev is not None and L_dev.numel() > 0:
-                dev_loss = dev_loss + L_dev.mean()
-
-            '''
-            faces = torch.from_numpy(fc_mesh.faces).long().to(self.device)
-            if self.E_thinplate_base is None:
-                with torch.no_grad():
-                    V0 = torch.from_numpy(fc_mesh.vertices).float().to(self.device)
-                    self.E_thinplate_base = thin_plate_energy(V0, faces)
-
-                fc_mesh.export(self.save_result_folder_path + 'start_fc_mesh.ply')
-
-            thinplate_loss = thinplate_loss + thin_plate_energy(vertices, faces, factor=self.E_thinplate_base)
-            '''
-
-        dev_loss = dev_loss / camera_num
-        fc_normal_loss = fc_normal_loss / camera_num
-        fc_depth_loss = fc_depth_loss / camera_num
-        chamfer_loss = chamfer_loss / camera_num
-        thinplate_loss = thinplate_loss / camera_num
-
-        # loss
-        total_loss = \
-            lambda_dev * dev_loss + \
-            lambda_fc_normal * fc_normal_loss + \
-            lambda_fc_depth * fc_depth_loss + \
-            lambda_chamfer * chamfer_loss + \
-            lambda_thin_plate * thinplate_loss
-
-        total_loss.backward()
-
-        self.fc_optimizer.step()
         self.fc_optimizer.zero_grad()
 
+        print('[INFO][FCTrainer::trainFCStep]')
+        print('\t start match fc to 2dgs normal and depth (batch_size={})...'.format(camera_batch_size))
+
+        for start in trange(0, camera_num, camera_batch_size):
+            end = min(start + camera_batch_size, camera_num)
+            batch_size = end - start
+
+            # 每个 batch 重新 extractMesh，保证本 batch 的 backward 有完整计算图
+            fc_mesh, vertices, L_dev = self.extractMesh()
+            if L_dev is not None and L_dev.numel() > 0:
+                sum_dev += L_dev.mean().item() * batch_size
+
+            batch_fc_normal_loss = torch.tensor(0.0, device=self.device)
+            batch_fc_depth_loss = torch.tensor(0.0, device=self.device)
+
+            for i in range(start, end):
+                viewpoint = self.scene[i]
+
+                with torch.no_grad():
+                    render_pkg = self.renderImage(viewpoint)
+                    for key in list(render_pkg.keys()):
+                        render_pkg[key] = render_pkg[key].detach()
+
+                fc_normal = NVDiffRastRenderer.renderNormal(
+                    fc_mesh,
+                    viewpoint._cam,
+                    vertices_tensor=vertices,
+                )['world']
+                rend_normal = render_pkg['rend_normal'].permute(1, 2, 0)
+                batch_fc_normal_loss = batch_fc_normal_loss + l1_loss(fc_normal, rend_normal)
+
+                fc_depth = NVDiffRastRenderer.renderDepth(
+                    fc_mesh,
+                    viewpoint._cam,
+                    bg_color=[0, 0, 0],
+                    vertices_tensor=vertices,
+                )['depth']
+                rend_depth = render_pkg['rend_depth']
+                batch_fc_depth_loss = batch_fc_depth_loss + l1_loss(fc_depth, rend_depth)
+
+            batch_fc_normal_loss = batch_fc_normal_loss / batch_size
+            batch_fc_depth_loss = batch_fc_depth_loss / batch_size
+            sum_fc_normal += batch_fc_normal_loss.item() * batch_size
+            sum_fc_depth += batch_fc_depth_loss.item() * batch_size
+
+            # 本 batch 的加权 loss，梯度累积后等价于全图平均
+            scale = batch_size / camera_num
+            batch_total = (
+                lambda_fc_normal * batch_fc_normal_loss + lambda_fc_depth * batch_fc_depth_loss
+            ) * scale
+            if L_dev is not None and L_dev.numel() > 0:
+                batch_total = batch_total + lambda_dev * L_dev.mean() / num_batches
+            batch_total.backward()
+
+            del fc_mesh, vertices, L_dev, batch_fc_normal_loss, batch_fc_depth_loss, batch_total
+            torch.cuda.empty_cache()
+
+        self.fc_optimizer.step()
+
+        # 汇总标量 loss（与原先语义一致：全图平均）
+        fc_normal_loss = sum_fc_normal / camera_num
+        fc_depth_loss = sum_fc_depth / camera_num
+        dev_loss = sum_dev / camera_num if camera_num else 0.0
+        chamfer_loss = sum_chamfer / camera_num
+        thinplate_loss = sum_thinplate / camera_num
+        total_loss_scalar = (
+            lambda_dev * dev_loss
+            + lambda_fc_normal * fc_normal_loss
+            + lambda_fc_depth * fc_depth_loss
+            + lambda_chamfer * chamfer_loss
+            + lambda_thin_plate * thinplate_loss
+        )
+
         loss_dict = {
-            'chamfer': chamfer_loss.item(),
-            'dev': dev_loss.item(),
-            'fc_normal': fc_normal_loss.item(),
-            'fc_depth': fc_depth_loss.item(),
-            'thinplate': thinplate_loss.item(),
-            'fc_total': total_loss.item(),
+            'chamfer': chamfer_loss,
+            'dev': dev_loss,
+            'fc_normal': fc_normal_loss,
+            'fc_depth': fc_depth_loss,
+            'thinplate': thinplate_loss,
+            'fc_total': total_loss_scalar,
         }
         return loss_dict
 
@@ -567,11 +579,18 @@ class FCTrainer(BaseGSTrainer):
         return True
 
     @torch.no_grad()
-    def saveScene(self, iteration: int) -> bool:
-        point_cloud_path = os.path.join(self.dataset.model_path, "point_cloud/iteration_{}".format(iteration))
-        self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+    def saveGaussians(self, iteration: int) -> bool:
+        save_gaussians_file_path = os.path.join(self.dataset.model_path, f"point_cloud/{iteration:06d}.ply")
+        createFileFolder(save_gaussians_file_path)
+        self.gaussians.save_ply(save_gaussians_file_path)
+        return True
+
+    @torch.no_grad()
+    def saveFC(self, iteration: int) -> bool:
+        save_fc_mesh_file_path = os.path.join(self.dataset.model_path, f"fc_mesh/{iteration:06d}.ply")
+        createFileFolder(save_fc_mesh_file_path)
         fc_mesh = self.extractMesh()[0]
-        fc_mesh.export(os.path.join(point_cloud_path, 'fc_mesh.ply'))
+        fc_mesh.export(save_fc_mesh_file_path)
         return True
 
     def train(self, iteration_num: int = 30000):
@@ -604,7 +623,7 @@ class FCTrainer(BaseGSTrainer):
 
                     if iteration % self.save_freq == 0:
                         print("\n[ITER {}] Saving Gaussians".format(iteration))
-                        self.saveScene(iteration)
+                        self.saveGaussians(iteration)
 
                 # Densification
                 if iteration < self.opt.densify_until_iter:
@@ -640,6 +659,7 @@ class FCTrainer(BaseGSTrainer):
                     loss_dict,
                     render_image_num=1,
                 )
+                self.saveFC(iteration)
         return True
 
     def exportMesh(
