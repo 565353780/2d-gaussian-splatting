@@ -129,11 +129,6 @@ class FCTrainer(BaseGSTrainer):
         lambda_opacity: float = 0.01,
         lambda_scaling: float = 1.0,
         lambda_surf_scaling: float = 1.0,
-        lambda_chamfer: float = 1.0,
-        lambda_dev: float = 0.1,
-        lambda_fc_normal: float = 0.1,
-        lambda_fc_depth: float = 0.1,
-        lambda_thin_plate: float = 0.1,
     ) -> Tuple[dict, dict]:
         self.gaussians.update_learning_rate(iteration)
 
@@ -254,52 +249,6 @@ class FCTrainer(BaseGSTrainer):
                     raw_winner_opacity = (n_winner * (1.0 - alpha_i).pow(2)).sum() / (n_winner.sum() + eps)
                     winner_opacity_loss = self.lambda_winner_opacity * raw_winner_opacity
 
-        # FlexiCubes developability 正则化损失
-        dev_loss = torch.tensor(0.0, device=self.device)
-        fc_normal_loss = torch.tensor(0.0, device=self.device)
-        fc_depth_loss = torch.tensor(0.0, device=self.device)
-        chamfer_loss = torch.tensor(0.0, device=self.device)
-        if iteration > 1500 and iteration % self.fc_update_freq == 0:
-            fc_mesh, vertices, L_dev = self.extractMesh()
-
-            fc_normal = NVDiffRastRenderer.renderNormal(
-                fc_mesh,
-                viewpoint_cam._cam,
-                vertices_tensor=vertices,
-            )['world']
-
-            rend_normal  = render_pkg['rend_normal'].permute(1, 2, 0)
-
-            fc_normal_loss = l1_loss(fc_normal, rend_normal)
-
-            '''
-            fc_depth = NVDiffRastRenderer.renderDepth(
-                fc_mesh,
-                viewpoint_cam._cam,
-                bg_color=[0, 0, 0],
-                vertices_tensor=vertices,
-            )['depth']
-
-            rend_depth = render_pkg['rend_depth']
-
-            fc_depth_loss = l1_loss(fc_depth, rend_depth)
-            '''
-
-            if L_dev is not None and L_dev.numel() > 0:
-                dev_loss = L_dev.mean()
-
-            '''
-            faces = torch.from_numpy(fc_mesh.faces).long().to(self.device)
-            if self.E_thinplate_base is None:
-                with torch.no_grad():
-                    V0 = torch.from_numpy(fc_mesh.vertices).float().to(self.device)
-                    self.E_thinplate_base = thin_plate_energy(V0, faces)
-
-                fc_mesh.export(self.save_result_folder_path + 'start_fc_mesh.ply')
-
-            thinplate_loss = thin_plate_energy(vertices, faces, factor=self.E_thinplate_base)
-            '''
-
         # loss
         total_loss = \
             rgb_loss + \
@@ -310,12 +259,7 @@ class FCTrainer(BaseGSTrainer):
             surface_loss + \
             exclusive_loss + \
             winner_opacity_loss + \
-            surf_scaling_loss + \
-            lambda_chamfer * chamfer_loss + \
-            lambda_dev * dev_loss + \
-            lambda_fc_normal * fc_normal_loss + \
-            lambda_fc_depth * fc_depth_loss #+ \
-            #lambda_thin_plate * thinplate_loss
+            surf_scaling_loss
 
         total_loss.backward()
 
@@ -335,51 +279,133 @@ class FCTrainer(BaseGSTrainer):
             'surface': surface_loss.item(),
             'exclusive': exclusive_loss.item(),
             'winner_opacity': winner_opacity_loss.item(),
-            'chamfer': chamfer_loss.item(),
-            'dev': dev_loss.item(),
-            'fc_normal': fc_normal_loss.item(),
-            'fc_depth': fc_depth_loss.item(),
-            #'thinplate': thinplate_loss.item(),
             'total': total_loss.item(),
         }
 
         return render_pkg, loss_dict
 
+    def trainFCStep(
+        self,
+        lambda_dev: float = 0.01,
+        lambda_fc_normal: float = 1.0,
+        lambda_fc_depth: float = 0.1,
+        lambda_chamfer: float = 1.0,
+        lambda_thin_plate: float = 0.1,
+    ) -> dict:
+        camera_num = len(self.scene)
+
+        dev_loss = torch.tensor(0.0, device=self.device)
+        fc_normal_loss = torch.tensor(0.0, device=self.device)
+        fc_depth_loss = torch.tensor(0.0, device=self.device)
+        chamfer_loss = torch.tensor(0.0, device=self.device)
+        thinplate_loss = torch.tensor(0.0, device=self.device)
+
+        fc_mesh, vertices, L_dev = self.extractMesh()
+
+        print('[INFO][FCTrainer::trainFCStep]')
+        print('\t start match fc to 2dgs normal and depth...')
+        for i in trange(camera_num):
+            viewpoint = self.scene[i]
+
+            with torch.no_grad():
+                render_pkg = self.renderImage(viewpoint)
+
+                for key, value in render_pkg.items():
+                    render_pkg[key] = value.detach()
+
+            fc_normal = NVDiffRastRenderer.renderNormal(
+                fc_mesh,
+                viewpoint._cam,
+                vertices_tensor=vertices,
+            )['world']
+
+            rend_normal  = render_pkg['rend_normal'].permute(1, 2, 0)
+
+            fc_normal_loss = fc_normal_loss + l1_loss(fc_normal, rend_normal)
+
+            fc_depth = NVDiffRastRenderer.renderDepth(
+                fc_mesh,
+                viewpoint._cam,
+                bg_color=[0, 0, 0],
+                vertices_tensor=vertices,
+            )['depth']
+
+            rend_depth = render_pkg['rend_depth']
+
+            fc_depth_loss = fc_depth_loss + l1_loss(fc_depth, rend_depth)
+
+            if L_dev is not None and L_dev.numel() > 0:
+                dev_loss = dev_loss + L_dev.mean()
+
+            '''
+            faces = torch.from_numpy(fc_mesh.faces).long().to(self.device)
+            if self.E_thinplate_base is None:
+                with torch.no_grad():
+                    V0 = torch.from_numpy(fc_mesh.vertices).float().to(self.device)
+                    self.E_thinplate_base = thin_plate_energy(V0, faces)
+
+                fc_mesh.export(self.save_result_folder_path + 'start_fc_mesh.ply')
+
+            thinplate_loss = thinplate_loss + thin_plate_energy(vertices, faces, factor=self.E_thinplate_base)
+            '''
+
+        dev_loss = dev_loss / camera_num
+        fc_normal_loss = fc_normal_loss / camera_num
+        fc_depth_loss = fc_depth_loss / camera_num
+        chamfer_loss = chamfer_loss / camera_num
+        thinplate_loss = thinplate_loss / camera_num
+
+        # loss
+        total_loss = \
+            lambda_dev * dev_loss + \
+            lambda_fc_normal * fc_normal_loss + \
+            lambda_fc_depth * fc_depth_loss + \
+            lambda_chamfer * chamfer_loss + \
+            lambda_thin_plate * thinplate_loss
+
+        total_loss.backward()
+
+        self.fc_optimizer.step()
+        self.fc_optimizer.zero_grad()
+
+        loss_dict = {
+            'chamfer': chamfer_loss.item(),
+            'dev': dev_loss.item(),
+            'fc_normal': fc_normal_loss.item(),
+            'fc_depth': fc_depth_loss.item(),
+            'thinplate': thinplate_loss.item(),
+            'fc_total': total_loss.item(),
+        }
+        return loss_dict
+
     @torch.no_grad
-    def logStep(
+    def logFCStep(
         self,
         iteration: int,
         loss_dict: dict,
         render_image_num: int=5,
-        is_fast: bool=False,
     ) -> bool:
-        BaseGSTrainer.logStep(
-            self,
-            iteration=iteration,
-            loss_dict=loss_dict,
-            render_image_num=render_image_num,
-            is_fast=is_fast,
-        )
+        for key, value in loss_dict.items():
+            self.logger.addScalar('FCLoss/' + key, value, iteration)
 
-        if iteration % self.test_freq == 0:
-            torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
-            fc_mesh = self.extractMesh()[0]
-            for idx in trange(render_image_num):
-                viewpoint = self.scene[idx]
+        fc_mesh = self.extractMesh()[0]
+        for idx in trange(render_image_num):
+            viewpoint = self.scene[idx]
 
-                if self.logger.isValid():
-                    fc_normal = NVDiffRastRenderer.renderNormal(
-                        fc_mesh,
-                        viewpoint._cam,
-                    )['rgb_world'].permute(2, 0, 1)
-                    self.logger.summary_writer.add_images("view_{}/fc_normal".format(viewpoint.image_name), fc_normal[None], global_step=iteration)
+            if self.logger.isValid():
+                fc_normal = NVDiffRastRenderer.renderNormal(
+                    fc_mesh,
+                    viewpoint._cam,
+                )['rgb_world'].permute(2, 0, 1)
+                self.logger.summary_writer.add_images("view_{}/fc_normal".format(viewpoint.image_name), fc_normal[None], global_step=iteration)
 
-                    fc_depth = NVDiffRastRenderer.renderDepth(
-                        fc_mesh,
-                        viewpoint._cam,
-                    )['rgb'].permute(2, 0, 1)
-                    self.logger.summary_writer.add_images("view_{}/fc_depth".format(viewpoint.image_name), fc_depth[None], global_step=iteration)
+                fc_depth = NVDiffRastRenderer.renderDepth(
+                    fc_mesh,
+                    viewpoint._cam,
+                )['rgb'].permute(2, 0, 1)
+                self.logger.summary_writer.add_images("view_{}/fc_depth".format(viewpoint.image_name), fc_depth[None], global_step=iteration)
         return True
 
     @torch.no_grad()
@@ -549,64 +575,71 @@ class FCTrainer(BaseGSTrainer):
         return True
 
     def train(self, iteration_num: int = 30000):
-        progress_bar = tqdm(desc="Training progress", total=iteration_num)
         iteration = 0
 
         self.recordGaussianState(iteration, record_num=1)
 
-        for _ in range(iteration_num):
-            iteration += 1
+        while iteration < iteration_num:
+            print('[INFO][FCTrainer::train]')
+            print('\t start train gs...')
+            for i in trange(len(self.scene)):
+                iteration += 1
 
-            viewpoint_cam = self.scene[iteration]
+                viewpoint_cam = self.scene[i]
 
-            render_pkg, loss_dict = self.trainStep(iteration, viewpoint_cam)
+                render_pkg, loss_dict = self.trainStep(iteration, viewpoint_cam)
 
-            if iteration % 10 == 0:
-                bar_loss_dict = {
-                    "rgb": f"{loss_dict['rgb']:.{5}f}",
-                    "distort": f"{loss_dict['dist']:.{5}f}",
-                    "normal": f"{loss_dict['normal']:.{5}f}",
-                    "Points": f"{len(self.gaussians.get_xyz)}"
-                }
-                progress_bar.set_postfix(bar_loss_dict)
-                progress_bar.update(10)
-
-            if iteration >= self.log_start_iter:
                 self.logStep(
                     iteration,
                     loss_dict,
-                    render_image_num=1,
-                    is_fast=True,
                 )
 
-                if iteration % self.save_freq == 0:
-                    print("\n[ITER {}] Saving Gaussians".format(iteration))
-                    self.saveScene(iteration)
+                if iteration >= self.log_start_iter:
+                    if iteration % self.test_freq == 0:
+                        self.logImageStep(
+                            iteration,
+                            render_image_num=1,
+                            is_fast=True,
+                        )
 
-            # Densification
-            if iteration < self.opt.densify_until_iter:
-                self.recordGrads(render_pkg)
-                if iteration > self.opt.densify_from_iter and iteration % self.opt.densification_interval == 0:
-                    self.densifyStep(render_pkg)
+                    if iteration % self.save_freq == 0:
+                        print("\n[ITER {}] Saving Gaussians".format(iteration))
+                        self.saveScene(iteration)
 
-                if iteration % self.opt.opacity_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
-                    self.resetOpacity()
+                # Densification
+                if iteration < self.opt.densify_until_iter:
+                    self.recordGrads(render_pkg)
+                    if iteration > self.opt.densify_from_iter and iteration % self.opt.densification_interval == 0:
+                        self.densifyStep(render_pkg)
 
-                if iteration % self.opt.scaling_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
-                    self.resetScaling()
+                    if iteration % self.opt.opacity_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
+                        self.resetOpacity()
 
-            # The multiview consistent pruning of fastgs. We do it every 3k iterations after 15k
-            # In this stage, the model converge basically. So we can prune more aggressively without degrading rendering quality.
-            # You can check the rendering results of 20K iterations in arxiv version (https://arxiv.org/abs/2511.04283), the rendering quality is already very good.
-            if iteration % 3000 == 0 and iteration > 15_000 and iteration < 30_000:
-                self.finalPrune()
+                    if iteration % self.opt.scaling_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
+                        self.resetScaling()
 
-            # 每个 step 删除不在任一 mask 内的 gaussian
-            # self.pruneGaussiansOutsideMasks()
+                # The multiview consistent pruning of fastgs. We do it every 3k iterations after 15k
+                # In this stage, the model converge basically. So we can prune more aggressively without degrading rendering quality.
+                # You can check the rendering results of 20K iterations in arxiv version (https://arxiv.org/abs/2511.04283), the rendering quality is already very good.
+                if iteration % 3000 == 0 and iteration > 15_000 and iteration < 30_000:
+                    self.finalPrune()
 
-            self.updateGSParams(iteration)
+                # 每个 step 删除不在任一 mask 内的 gaussian
+                # self.pruneGaussiansOutsideMasks()
 
-            self.iteration = iteration
+                self.updateGSParams(iteration)
+
+                self.iteration = iteration
+
+            if iteration >= self.log_start_iter:
+                print('[INFO][FCTrainer::train]')
+                print('\t start train fc...')
+                loss_dict = self.trainFCStep()
+                self.logFCStep(
+                    iteration,
+                    loss_dict,
+                    render_image_num=1,
+                )
         return True
 
     def exportMesh(
