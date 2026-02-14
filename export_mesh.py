@@ -1,15 +1,20 @@
-import os
 import sys
+sys.path.append('../base-gs-trainer')
+
+import os
 import torch
 import open3d as o3d
 
 from argparse import ArgumentParser
-from arguments import ModelParams, PipelineParams
-from gaussian_renderer import render
+
 from utils.mesh_utils import GaussianExtractor, post_process_mesh
 
-from twod_gs.Dataset.scene import Scene
+from base_gs_trainer.Dataset.gs_cameras import GSCameras
+
+from twod_gs.Config.config import ModelParams, PipelineParams
 from twod_gs.Model.gs import GaussianModel
+from twod_gs.Method.render_kernel import render
+
 
 if __name__ == "__main__":
     # Set up command line argument parser
@@ -35,7 +40,8 @@ if __name__ == "__main__":
 
     dataset, iteration, pipe = model.extract(args), args.iteration, pipeline.extract(args)
     gaussians = GaussianModel(dataset.sh_degree)
-    scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
+    gaussians.load_ply()
+    scene = GSCameras(dataset, gaussians, shuffle=False)
     bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
