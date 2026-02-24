@@ -37,6 +37,7 @@ class OptimizationParams(BaseOptimizationParams, ParamGroup):
         self.densification_interval = 100
         self.opacity_reset_interval = 500
         self.scaling_reset_interval = 500
+        self.densify_until_iter = 30000
         self.densify_grad_threshold = 0.0002
 
         # fastgs parameters
