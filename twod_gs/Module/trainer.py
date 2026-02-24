@@ -11,6 +11,7 @@ from argparse import ArgumentParser
 
 from fused_ssim import fused_ssim
 
+from simple_knn._C import distCUDA2
 from utils.general_utils import inverse_sigmoid
 from utils.mesh_utils import GaussianExtractor, post_process_mesh
 
@@ -84,7 +85,7 @@ class Trainer(BaseGSTrainer):
         lambda_normal: float = 0.01,
         lambda_dist: float = 0.01,
         lambda_opacity: float = 0.01,
-        lambda_scaling: float = 1.0,
+        lambda_scaling: float = 0.01,
     ) -> Tuple[dict, dict]:
         self.gaussians.update_learning_rate(iteration)
 
@@ -267,20 +268,40 @@ class Trainer(BaseGSTrainer):
         return True
 
     @torch.no_grad()
-    def pruneLargeScaleGaussians(self, iqr_multiplier: float = 3.0) -> bool:
+    def pruneLargeScaleGaussians(self, scale_multiplier: float = 2.0) -> bool:
         scaling = self.gaussians.get_scaling  # (N, 2)
         N = scaling.shape[0]
         if N == 0:
             return True
 
         max_scale = scaling.max(dim=1).values  # (N,)
-
-        q1 = torch.quantile(max_scale, 0.25)
-        q3 = torch.quantile(max_scale, 0.75)
-        iqr = q3 - q1
-        upper_bound = q3 + iqr_multiplier * iqr
+        mean_scale = max_scale.mean()
+        upper_bound = mean_scale * scale_multiplier
 
         to_remove = max_scale > upper_bound
+        n_remove = to_remove.sum().item()
+        if n_remove > 0:
+            self.gaussians.prune_points(to_remove)
+            if self.surface_confidence is not None and self.surface_confidence.shape[0] == N:
+                self.surface_confidence = self.surface_confidence[~to_remove]
+        return True
+
+    @torch.no_grad()
+    def pruneFloatingGaussians(self, scale_multiplier: float = 10.0) -> bool:
+        xyz = self.gaussians.get_xyz  # (N, 3)
+        scaling = self.gaussians.get_scaling  # (N, 2)
+        N = xyz.shape[0]
+        if N <= 1:
+            return True
+
+        max_scale = scaling.max(dim=1).values  # (N,)
+        threshold_sq = (max_scale * scale_multiplier).square()  # (N,)
+
+        # distCUDA2: Morton-code sorted KNN-3 with box pruning, ~O(N)
+        # Returns mean squared distance to 3 nearest neighbors per point
+        mean_knn3_dist_sq = distCUDA2(xyz.contiguous())  # (N,)
+
+        to_remove = mean_knn3_dist_sq > threshold_sq
         n_remove = to_remove.sum().item()
         if n_remove > 0:
             self.gaussians.prune_points(to_remove)
@@ -401,7 +422,9 @@ class Trainer(BaseGSTrainer):
             if iteration % 3000 == 0 and iteration > self.opt.densify_until_iter:
                 self.finalPrune()
 
-            self.pruneLargeScaleGaussians()
+            if iteration % self.opt.densification_interval == 0:
+                self.pruneLargeScaleGaussians()
+                self.pruneFloatingGaussians()
 
             # self.pruneGaussiansOutsideMasks()
 

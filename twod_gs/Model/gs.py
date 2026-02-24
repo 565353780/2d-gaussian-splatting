@@ -245,14 +245,14 @@ class GaussianModel:
         PlyData([el]).write(path)
 
     def reset_opacity(self):
-        opacities_new = self.inverse_opacity_activation(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
-        optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
+        opacities_new = self.inverse_opacity_activation(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.1))
+        optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity", keep_momentum=True)
         self._opacity = optimizable_tensors["opacity"]
 
     def reset_scaling(self):
         scaling = self.get_scaling
         scalings_new = self.scaling_inverse_activation(torch.min(scaling, torch.ones_like(scaling)*torch.mean(scaling)))
-        optimizable_tensors = self.replace_tensor_to_optimizer(scalings_new, "scaling")
+        optimizable_tensors = self.replace_tensor_to_optimizer(scalings_new, "scaling", keep_momentum=True)
         self._scaling = optimizable_tensors["scaling"]
 
     def load_ply(self, path):
@@ -298,17 +298,21 @@ class GaussianModel:
 
         self.active_sh_degree = self.max_sh_degree
 
-    def replace_tensor_to_optimizer(self, tensor, name):
+    def replace_tensor_to_optimizer(self, tensor, name, keep_momentum=False):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             if group["name"] == name:
                 stored_state = self.optimizer.state.get(group['params'][0], None)
-                stored_state["exp_avg"] = torch.zeros_like(tensor)
-                stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
+                if stored_state is not None:
+                    if not keep_momentum:
+                        stored_state["exp_avg"] = torch.zeros_like(tensor)
+                        stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
 
-                del self.optimizer.state[group['params'][0]]
-                group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
-                self.optimizer.state[group['params'][0]] = stored_state
+                    del self.optimizer.state[group['params'][0]]
+                    group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
+                    self.optimizer.state[group['params'][0]] = stored_state
+                else:
+                    group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
 
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
