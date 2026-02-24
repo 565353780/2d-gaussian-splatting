@@ -27,18 +27,16 @@ class PipelineParams(BasePipelineParams, ParamGroup):
 class OptimizationParams(BaseOptimizationParams, ParamGroup):
     def __init__(self, parser):
         BaseOptimizationParams.__init__(self)
+
         self.opacity_lr = 0.05
-        self.percent_dense = 0.01
 
         self.lambda_dist = 0.0
         self.lambda_normal = 0.05
         self.opacity_cull = 0.05
 
         self.densification_interval = 100
-        #self.opacity_reset_interval = 500
-        self.opacity_reset_interval = 3000
+        self.opacity_reset_interval = 500
         self.scaling_reset_interval = 500
-        self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
 
         # fastgs parameters

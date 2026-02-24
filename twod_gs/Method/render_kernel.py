@@ -9,9 +9,9 @@ from twod_gs.Model.gs import GaussianModel
 from twod_gs.Method.point_utils import depth_to_normal
 
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, get_flag = None, metric_map = None):
     """
-    Render the scene. 
+    Render the scene.
 
     Background tensor (bg_color) must be on GPU!
     """
@@ -27,6 +27,13 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
 
+    # Only create metric_map if get_flag is True and metric_map is provided
+    get_flag_value = get_flag if get_flag is not None else False
+    if get_flag_value and metric_map is None:
+        metric_map = torch.zeros(int(viewpoint_camera.image_height) * int(viewpoint_camera.image_width), dtype=torch.int, device='cuda')
+    elif not get_flag_value:
+        metric_map = None
+
     raster_settings = GaussianRasterizationSettings(
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
@@ -40,7 +47,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
         debug=False,
-        # pipe.debug
+        get_flag=get_flag_value,
+        metric_map=metric_map
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -87,7 +95,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     else:
         colors_precomp = override_color
 
-    rendered_image, radii, allmap = rasterizer(
+    result = rasterizer(
         means3D = means3D,
         means2D = means2D,
         shs = shs,
@@ -98,13 +106,21 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         cov3D_precomp = cov3D_precomp
     )
 
+    # Handle return value: (color, radii, depth, accum_metric_counts, winner_id, hit_counts) - always 6 elements
+    rendered_image, radii, allmap, accum_metric_counts, winner_id, hit_counts = result
+
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
     rets =  {"render": rendered_image,
             "viewspace_points": means2D,
             "visibility_filter" : radii > 0,
             "radii": radii,
+            "winner_id": winner_id,  # HxW: per-pixel Gaussian id with largest opacity contribution (-1 if none)
+            "hit_counts": hit_counts,  # P: per-Gaussian count of rays that hit (entered blending)
     }
+
+    if accum_metric_counts is not None:
+        rets["accum_metric_counts"] = accum_metric_counts
 
 
     # additional regularizations
@@ -129,7 +145,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     # psedo surface attributes
     # surf depth is either median or expected by setting depth_ratio to 1 or 0
-    # for bounded scene, use median depth, i.e., depth_ratio = 1; 
+    # for bounded scene, use median depth, i.e., depth_ratio = 1;
     # for unbounded scene, use expected depth, i.e., depth_ration = 0, to reduce disk anliasing.
     surf_depth = render_depth_expected * (1-pipe.depth_ratio) + (pipe.depth_ratio) * render_depth_median
 
@@ -138,7 +154,6 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     surf_normal = surf_normal.permute(2,0,1)
     # remember to multiply with accum_alpha since render_normal is unnormalized.
     surf_normal = surf_normal * (render_alpha).detach()
-
 
     rets.update({
             'rend_alpha': render_alpha,

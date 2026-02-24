@@ -11,6 +11,7 @@ from argparse import ArgumentParser
 
 from fused_ssim import fused_ssim
 
+from utils.general_utils import inverse_sigmoid
 from utils.mesh_utils import GaussianExtractor, post_process_mesh
 
 from base_gs_trainer.Loss.l1 import l1_loss
@@ -27,6 +28,7 @@ from mv_fc_recon.Loss.mesh_geo_energy import thin_plate_energy
 
 from twod_gs.Config.config import ModelParams, PipelineParams, OptimizationParams
 from twod_gs.Method.render_kernel import render
+from twod_gs.Method.fast_utils import sampling_cameras, compute_gaussian_score_fastgs
 from twod_gs.Model.gs import GaussianModel
 
 
@@ -74,6 +76,18 @@ class FCTrainer(BaseGSTrainer):
             save_freq=save_freq,
         )
 
+        # Ray-wise Surface Winner + Surface hardening (Phase B)
+        # S_i = fraction of rays where Gaussian i is winner (from winner_id); C_i = EMA(S_i)
+        self.surface_confidence = None  # shape (N,) when inited; EMA of S_i
+        self.surface_ema_momentum = getattr(self.opt, "surface_ema_momentum", 0.99)
+        self.surface_hardening_start_iter = getattr(self.opt, "surface_hardening_start_iter", 10_000)
+        # Phase B：仅奖励表面附近 Gaussian 的 opacity→1，非表面只做轻微惩罚；loss 均做归一化避免压倒 rgb
+        self.lambda_surface = getattr(self.opt, "lambda_surface", 0.05)
+        self.lambda_exclusive = getattr(self.opt, "lambda_exclusive", 0.01)  # 轻微惩罚 loser，远小于 λ_surface
+        self.surface_confidence_max = getattr(self.opt, "surface_confidence_max", 0.1)  # clamp C_i 避免梯度压倒 photometric
+        self.surface_confidence_min = getattr(self.opt, "surface_confidence_min", 0.01)  # C_i 低于此不施加 push→1
+        self.lambda_winner_opacity = getattr(self.opt, "lambda_winner_opacity", 0.05)  # 鼓励 winner gaussians 的 opacity→1
+
         assert os.path.exists(init_mesh_file_path)
         self.fc_params = FCConvertor.createFC(
             init_mesh_file_path,
@@ -113,8 +127,9 @@ class FCTrainer(BaseGSTrainer):
         lambda_dssim: float = 0.2,
         lambda_normal: float = 0.01,
         lambda_dist: float = 0.01,
-        lambda_opacity: float = 1e-6,
+        lambda_opacity: float = 0.01,
         lambda_scaling: float = 1.0,
+        lambda_surf_scaling: float = 1.0,
     ) -> Tuple[dict, dict]:
         self.gaussians.update_learning_rate(iteration)
 
@@ -140,7 +155,7 @@ class FCTrainer(BaseGSTrainer):
             valid_normal_dot = normal_dot[valid_dot_idxs]
 
             normal_error = (1 - valid_normal_dot)
-            normal_loss = normal_error.mean()
+            normal_loss = lambda_normal * normal_error.mean()
 
         lambda_dist = lambda_dist if iteration > 1000 else 0.0
         dist_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
@@ -148,24 +163,104 @@ class FCTrainer(BaseGSTrainer):
             rend_dist = render_pkg["rend_dist"]
             valid_dist_idxs = torch.where(rend_dist != 0)
             valid_rend_dist = rend_dist[valid_dist_idxs]
-            dist_loss = valid_rend_dist.mean()
+            dist_loss = lambda_dist * valid_rend_dist.mean()
 
         # Phase A: Surface selection — push non-surface to 0 (opacity, scale)；Phase B 开始后彻底关闭
         opacity_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
         if lambda_opacity > 0:
-            opacity_loss = nn.MSELoss()(self.gaussians.get_opacity, torch.zeros_like(self.gaussians._opacity))
+            opacity_loss = lambda_opacity * nn.MSELoss()(self.gaussians.get_opacity, torch.zeros_like(self.gaussians._opacity))
 
         scaling_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
         if lambda_scaling > 0:
-            scaling_loss = nn.MSELoss()(self.gaussians.get_scaling, torch.zeros_like(self.gaussians._scaling))
+            scaling_loss = lambda_scaling * nn.MSELoss()(self.gaussians.get_scaling, torch.zeros_like(self.gaussians._scaling))
+
+        # Phase B: Surface hardening — ray-wise exclusivity + temporal stability
+        # winner_id = argmax_i (α_i · T_before_i). S_i = n_winner_i / (n_hit_i + ε)；n_hit_i 来自 rasterizer hit_counts，
+        # 仅在有 Gaussian 参与 blending 的 pixel 上累加，winner_id=-1（背景）的 pixel 不计入任何 n_hit_i，故 S_i 分母已排除背景。
+        # C_i = EMA(S_i)。L_surface / L_exclusive 见下。
+        surface_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+        exclusive_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+        winner_opacity_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+        surf_scaling_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+
+        if iteration > self.surface_hardening_start_iter:
+            winner_id = render_pkg.get("winner_id")
+            hit_counts = render_pkg.get("hit_counts")
+            if winner_id is not None and hit_counts is not None:
+                N = self.gaussians.get_xyz.shape[0]
+                H, W = int(viewpoint_cam.image_height), int(viewpoint_cam.image_width)
+                winner_flat = winner_id.reshape(-1).long().to(rgb_loss.device)
+                n_hit = hit_counts.float().to(rgb_loss.device)
+                eps = 1e-8
+                valid = winner_flat >= 0
+                with torch.no_grad():  # EMA 与 S_i 统计均在 no_grad 下更新
+                    if valid.any():
+                        indices = winner_flat[valid].clamp(max=N - 1).to(torch.int64)
+                        n_winner = torch.bincount(indices, minlength=N)
+                        # S_i = n_winner_i / (n_hit_i + ε): "when hit, how often is i the winner" (no area bias)
+                        S_i = n_winner.float() / (n_hit + eps)
+                    else:
+                        n_winner = torch.zeros(N, device=rgb_loss.device, dtype=torch.float32)
+                        S_i = torch.zeros(N, device=rgb_loss.device, dtype=torch.float32)
+                    old_N = self.surface_confidence.shape[0] if self.surface_confidence is not None else 0
+                    if self.surface_confidence is None or old_N == 0:
+                        self.surface_confidence = S_i.clone()
+                    elif N > old_N:
+                        # N 增加（densification / split clone）：旧 index 保留 EMA，新 index C_i = 0
+                        new_confidence = torch.zeros(N, device=S_i.device, dtype=S_i.dtype)
+                        new_confidence[:old_N] = (
+                            self.surface_ema_momentum * self.surface_confidence
+                            + (1.0 - self.surface_ema_momentum) * S_i[:old_N]
+                        )
+                        new_confidence[old_N:] = S_i[old_N:]  # 新 Gaussian 用当前 S_i（通常为 0）
+                        self.surface_confidence = new_confidence
+                    elif N < old_N:
+                        # N 减少（prune）：无旧→新 index 映射时保守重置
+                        self.surface_confidence = S_i.clone()
+                    else:
+                        self.surface_confidence = (
+                            self.surface_ema_momentum * self.surface_confidence
+                            + (1.0 - self.surface_ema_momentum) * S_i
+                        )
+                # L_surface: 仅对 C_i > C_min 的“表面”Gaussian 施加 push→1，按表面点数归一化，避免随 N 爆炸
+                if self.surface_confidence.shape[0] == N:
+                    C_i_raw = torch.clamp(
+                        self.surface_confidence.detach().to(rgb_loss.dtype),
+                        0.0, self.surface_confidence_max,
+                    )
+                    surface_mask = (C_i_raw > self.surface_confidence_min).to(rgb_loss.dtype)
+                    C_i = C_i_raw * surface_mask
+                    n_surface = surface_mask.sum().clamp(min=1.0)
+                    s_i = self.gaussians._opacity.squeeze(-1)
+                    s_target = inverse_sigmoid(torch.tensor(0.99, device=s_i.device, dtype=s_i.dtype))
+                    surface_loss = self.lambda_surface * (C_i * torch.relu(s_target - s_i).pow(2)).sum() / n_surface
+
+                    # L_scale (surface-weighted scale collapse): 仅对 surface_mask 对应的 gaussians 计算
+                    if lambda_surf_scaling > 0:
+                        scale_xy = self.gaussians.get_scaling  # (N, 2)
+                        scale_sq_sum = (scale_xy ** 2).sum(dim=1)  # (N,)
+                        surf_scaling_loss = lambda_surf_scaling * (C_i * scale_sq_sum).sum() / n_surface
+                # L_exclusive: 对 loser 做轻微惩罚，按 ray 数 (H*W) 归一化为 per-ray，避免压倒 rgb
+                alpha_i = self.gaussians.get_opacity.squeeze(-1)
+                n_loser_i = (n_hit - n_winner).clamp(min=0).to(rgb_loss.dtype)
+                n_rays = float(H * W)
+                exclusive_loss = self.lambda_exclusive * (alpha_i.pow(2) * n_loser_i).sum() / n_rays
+                # L_winner_opacity: 鼓励 winner gaussians 的 opacity→1，按 n_winner 加权
+                if n_winner.sum() > 0:
+                    raw_winner_opacity = (n_winner * (1.0 - alpha_i).pow(2)).sum() / (n_winner.sum() + eps)
+                    winner_opacity_loss = self.lambda_winner_opacity * raw_winner_opacity
 
         # loss
         total_loss = \
             rgb_loss + \
-            lambda_dist * dist_loss + \
-            lambda_normal * normal_loss + \
-            lambda_opacity * opacity_loss + \
-            lambda_scaling * scaling_loss
+            dist_loss + \
+            normal_loss + \
+            opacity_loss + \
+            scaling_loss + \
+            surface_loss + \
+            exclusive_loss + \
+            winner_opacity_loss + \
+            surf_scaling_loss
 
         total_loss.backward()
 
@@ -181,6 +276,10 @@ class FCTrainer(BaseGSTrainer):
             'normal': normal_loss.item(),
             'opacity': opacity_loss.item(),
             'scaling': scaling_loss.item(),
+            'surf_scaling': surf_scaling_loss.item(),
+            'surface': surface_loss.item(),
+            'exclusive': exclusive_loss.item(),
+            'winner_opacity': winner_opacity_loss.item(),
             'total': total_loss.item(),
         }
 
@@ -392,13 +491,21 @@ class FCTrainer(BaseGSTrainer):
         return True
 
     @torch.no_grad()
-    def densifyStep(self) -> bool:
+    def densifyStep(self, render_pkg: dict) -> bool:
         size_threshold = 20
-        self.gaussians.densify_and_prune(
-            self.opt.densify_grad_threshold,
-            self.opt.opacity_cull,
-            self.scene.cameras_extent,
-            size_threshold,
+        my_viewpoint_stack = self.scene.train_cameras
+        camlist = sampling_cameras(my_viewpoint_stack)
+
+        # The multiview consistent densification of fastgs
+        importance_score, pruning_score = compute_gaussian_score_fastgs(camlist, self.gaussians, self.pipe, self.background, self.opt, DENSIFY=True)
+        self.gaussians.densify_and_prune_fastgs(
+            max_screen_size = size_threshold,
+            min_opacity = 0.005,
+            extent = self.scene.cameras_extent,
+            radii=render_pkg['radii'],
+            args = self.opt,
+            importance_score = importance_score,
+            pruning_score = pruning_score,
         )
         return True
 
@@ -413,9 +520,62 @@ class FCTrainer(BaseGSTrainer):
         return True
 
     @torch.no_grad()
-    def updateGSParams(self) -> bool:
-        self.gaussians.optimizer.step()
-        self.gaussians.optimizer.zero_grad(set_to_none = True)
+    def pruneGaussiansOutsideMasks(self) -> bool:
+        """删除不在任一 mask 内的 gaussian：将每个 gaussian 投影到所有带 mask 的视角，若在任一视角的 mask 内则保留，否则删除。"""
+        cams_with_mask = [c for c in self.scene.train_cameras if getattr(c, 'gt_alpha_mask', None) is not None]
+        if not cams_with_mask:
+            return True
+
+        xyz = self.gaussians.get_xyz  # (N, 3) on cuda
+        N = xyz.shape[0]
+        if N == 0:
+            return True
+
+        device = xyz.device
+        inside_any = torch.zeros(N, dtype=torch.bool, device=device)
+
+        for cam in cams_with_mask:
+            # full_proj_transform: (4, 4), world point -> NDC
+            proj = cam.full_proj_transform.to(device)
+            mask = cam.gt_alpha_mask.to(device)  # (1, H, W)
+            H, W = mask.shape[1], mask.shape[2]
+
+            xyz_h = torch.cat([xyz, torch.ones(N, 1, device=device, dtype=xyz.dtype)], dim=1)  # (N, 4)
+            proj_pts = (proj.unsqueeze(0) @ xyz_h.unsqueeze(-1)).squeeze(-1)  # (N, 4)
+            w = proj_pts[:, 3].clamp(min=1e-6)
+            ndc_x = proj_pts[:, 0] / w
+            ndc_y = proj_pts[:, 1] / w
+            ndc_z = proj_pts[:, 2] / w
+
+            # 在相机前方 (NDC z 通常在 [0,1] 或 [-1,1] 视实现而定，这里取可见为 z > 0)
+            in_front = ndc_z > 0
+            # NDC -> pixel: x right, y down; NDC x,y in [-1,1]
+            u = ((ndc_x + 1.0) * 0.5 * (W - 1)).long().clamp(0, W - 1)
+            v = ((1.0 - ndc_y) * 0.5 * (H - 1)).long().clamp(0, H - 1)
+            mask_val = mask[0, v, u]  # (N,)
+            inside_mask = (mask_val > 0.5) & in_front
+            inside_any = inside_any | inside_mask
+
+        to_remove = ~inside_any
+        n_remove = to_remove.sum().item()
+        if n_remove > 0:
+            self.gaussians.prune_points(to_remove)
+            if self.surface_confidence is not None and self.surface_confidence.shape[0] == N:
+                self.surface_confidence = self.surface_confidence[~to_remove]
+        return True
+
+    @torch.no_grad()
+    def finalPrune(self) -> bool:
+        my_viewpoint_stack = self.scene.train_cameras
+        camlist = sampling_cameras(my_viewpoint_stack)
+
+        _, pruning_score = compute_gaussian_score_fastgs(camlist, self.gaussians, self.pipe, self.background, self.opt)
+        self.gaussians.final_prune_fastgs(min_opacity = 0.1, pruning_score = pruning_score)
+        return True
+
+    @torch.no_grad()
+    def updateGSParams(self, iteration: int) -> bool:
+        self.gaussians.optimizer_step(iteration)
         return True
 
     @torch.no_grad()
@@ -468,9 +628,8 @@ class FCTrainer(BaseGSTrainer):
                 # Densification
                 if iteration < self.opt.densify_until_iter:
                     self.recordGrads(render_pkg)
-
                     if iteration > self.opt.densify_from_iter and iteration % self.opt.densification_interval == 0:
-                        self.densifyStep()
+                        self.densifyStep(render_pkg)
 
                     if iteration % self.opt.opacity_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
                         self.resetOpacity()
@@ -478,7 +637,16 @@ class FCTrainer(BaseGSTrainer):
                     if iteration % self.opt.scaling_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
                         self.resetScaling()
 
-                self.updateGSParams()
+                # The multiview consistent pruning of fastgs. We do it every 3k iterations after 15k
+                # In this stage, the model converge basically. So we can prune more aggressively without degrading rendering quality.
+                # You can check the rendering results of 20K iterations in arxiv version (https://arxiv.org/abs/2511.04283), the rendering quality is already very good.
+                if iteration % 3000 == 0 and iteration > 15_000 and iteration < 30_000:
+                    self.finalPrune()
+
+                # 每个 step 删除不在任一 mask 内的 gaussian
+                # self.pruneGaussiansOutsideMasks()
+
+                self.updateGSParams(iteration)
 
                 self.iteration = iteration
 

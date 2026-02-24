@@ -11,6 +11,7 @@
 
 #include <math.h>
 #include <torch/extension.h>
+#include <cstdint>
 #include <cstdio>
 #include <sstream>
 #include <iostream>
@@ -36,7 +37,7 @@ std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
 	return lambda;
 }
 
-std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -85,6 +86,10 @@ RasterizeGaussiansCUDA(
   torch::Tensor out_color = torch::full({NUM_CHANNELS, H, W}, 0.0, float_opts);
   torch::Tensor out_others = torch::full({3+3+1, H, W}, 0.0, float_opts);
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
+  // HxW: per-pixel Gaussian id with largest opacity contribution (0xFFFFFFFF = -1 if none)
+  torch::Tensor winner_id = torch::full({H, W}, -1, int_opts);
+  // P: per-Gaussian count of rays that hit (entered blending)
+  torch::Tensor hit_counts = torch::zeros({P}, int_opts);
   
   torch::Device device(torch::kCUDA);
   torch::TensorOptions options(torch::kByte);
@@ -128,9 +133,150 @@ RasterizeGaussiansCUDA(
 		out_color.contiguous().data<float>(),
 		out_others.contiguous().data<float>(),
 		radii.contiguous().data<int>(),
-		debug);
+		debug,
+		reinterpret_cast<uint32_t*>(winner_id.contiguous().data_ptr<int32_t>()),
+		hit_counts.contiguous().data<int>());
   }
-  return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer);
+  return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer, winner_id, hit_counts);
+}
+
+std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+RasterizeGaussiansCUDA(
+	const torch::Tensor& background,
+	const torch::Tensor& means3D,
+	const torch::Tensor& colors,
+	const torch::Tensor& opacity,
+	const torch::Tensor& scales,
+	const torch::Tensor& rotations,
+	const float scale_modifier,
+	const torch::Tensor& transMat_precomp,
+	const torch::Tensor& metric_map,
+	const torch::Tensor& viewmatrix,
+	const torch::Tensor& projmatrix,
+	const float tan_fovx, 
+	const float tan_fovy,
+	const int image_height,
+	const int image_width,
+	const torch::Tensor& sh,
+	const int degree,
+	const torch::Tensor& campos,
+	const bool prefiltered,
+	const bool debug,
+	const bool get_flag)
+{
+  if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
+	AT_ERROR("means3D must have dimensions (num_points, 3)");
+  }
+
+  
+  const int P = means3D.size(0);
+  const int H = image_height;
+  const int W = image_width;
+
+  CHECK_INPUT(background);
+  CHECK_INPUT(means3D);
+  CHECK_INPUT(colors);
+  CHECK_INPUT(opacity);
+  CHECK_INPUT(scales);
+  CHECK_INPUT(rotations);
+  CHECK_INPUT(transMat_precomp);
+  CHECK_INPUT(viewmatrix);
+  CHECK_INPUT(projmatrix);
+  CHECK_INPUT(sh);
+  CHECK_INPUT(campos);
+
+  auto int_opts = means3D.options().dtype(torch::kInt32);
+  auto float_opts = means3D.options().dtype(torch::kFloat32);
+
+  torch::Tensor out_color = torch::full({NUM_CHANNELS, H, W}, 0.0, float_opts);
+  torch::Tensor out_others = torch::full({3+3+1, H, W}, 0.0, float_opts);
+  torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
+  torch::Tensor winner_id = torch::full({H, W}, -1, int_opts);
+  torch::Tensor hit_counts = torch::zeros({P}, int_opts);
+  
+  torch::Device device(torch::kCUDA);
+  torch::TensorOptions options(torch::kByte);
+  torch::Tensor geomBuffer = torch::empty({0}, options.device(device));
+  torch::Tensor binningBuffer = torch::empty({0}, options.device(device));
+  torch::Tensor imgBuffer = torch::empty({0}, options.device(device));
+  std::function<char*(size_t)> geomFunc = resizeFunctional(geomBuffer);
+  std::function<char*(size_t)> binningFunc = resizeFunctional(binningBuffer);
+  std::function<char*(size_t)> imgFunc = resizeFunctional(imgBuffer);
+  
+  torch::Tensor accum_metric_counts = torch::empty({0}, int_opts);
+  int* accum_metric_counts_ptr = nullptr;
+  
+  if(get_flag)
+  {
+	if(metric_map.defined() && metric_map.numel() > 0)
+	{
+		CHECK_INPUT(metric_map);
+		accum_metric_counts = torch::full({P}, 0, int_opts);
+		accum_metric_counts_ptr = accum_metric_counts.contiguous().data<int>();
+	}
+	else
+	{
+		// If metric_map is not provided, create a zero tensor
+		accum_metric_counts = torch::full({P}, 0, int_opts);
+		accum_metric_counts_ptr = accum_metric_counts.contiguous().data<int>();
+	}
+  }
+  
+  int rendered = 0;
+  if(P != 0)
+  {
+	  int M = 0;
+	  if(sh.size(0) != 0)
+	  {
+		M = sh.size(1);
+	  }
+
+	  const int* metric_map_ptr = nullptr;
+	  if(metric_map.defined() && metric_map.numel() > 0)
+	  {
+		metric_map_ptr = metric_map.contiguous().data<int>();
+	  }
+
+	  rendered = CudaRasterizer::Rasterizer::forward(
+		geomFunc,
+		binningFunc,
+		imgFunc,
+		P, degree, M,
+		background.contiguous().data<float>(),
+		W, H,
+		means3D.contiguous().data<float>(),
+		sh.contiguous().data_ptr<float>(),
+		colors.contiguous().data<float>(), 
+		opacity.contiguous().data<float>(), 
+		scales.contiguous().data_ptr<float>(),
+		scale_modifier,
+		rotations.contiguous().data_ptr<float>(),
+		transMat_precomp.contiguous().data<float>(),
+		metric_map_ptr,
+		viewmatrix.contiguous().data<float>(), 
+		projmatrix.contiguous().data<float>(),
+		campos.contiguous().data<float>(),
+		tan_fovx,
+		tan_fovy,
+		prefiltered,
+		out_color.contiguous().data<float>(),
+		out_others.contiguous().data<float>(),
+		radii.contiguous().data<int>(),
+		debug,
+		get_flag,
+		accum_metric_counts_ptr,
+		reinterpret_cast<uint32_t*>(winner_id.contiguous().data_ptr<int32_t>()),
+		hit_counts.contiguous().data<int>());
+  }
+  
+  if(get_flag)
+  {
+	return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer, accum_metric_counts, winner_id, hit_counts);
+  }
+  else
+  {
+	return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer, torch::empty({0}, int_opts), winner_id, hit_counts);
+  }
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
