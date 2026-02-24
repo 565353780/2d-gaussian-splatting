@@ -113,9 +113,8 @@ class FCTrainer(BaseGSTrainer):
         lambda_dssim: float = 0.2,
         lambda_normal: float = 0.01,
         lambda_dist: float = 0.01,
-        lambda_opacity: float = 0.01,
+        lambda_opacity: float = 1e-6,
         lambda_scaling: float = 1.0,
-        lambda_surf_scaling: float = 1.0,
     ) -> Tuple[dict, dict]:
         self.gaussians.update_learning_rate(iteration)
 
