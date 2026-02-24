@@ -407,27 +407,24 @@ class GaussianModel:
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
-    def densify_and_split_fastgs(self, metric_mask, filter, N=2):
-        n_init_points = self.get_xyz.shape[0]
+    def densify_and_split(self, selected_pts_mask, N=2):
+        """Split large gaussians into N smaller ones on the same 2D plane.
+        Offsets are sampled only along in-plane tangent directions (R[:,:,0], R[:,:,1])
+        so every child gaussian stays coplanar with the parent."""
+        stds = self.get_scaling[selected_pts_mask].repeat(N, 1)  # (N*K, 2)
+        samples_2d = torch.normal(mean=torch.zeros_like(stds), std=stds)
 
-        selected_pts_mask = torch.zeros((n_init_points), dtype=bool, device="cuda")
-        mask = torch.logical_and(metric_mask, filter)
-        selected_pts_mask[:mask.shape[0]] = mask
+        rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N, 1, 1)  # (N*K, 3, 3)
+        tangent1 = rots[:, :, 0]  # (N*K, 3)
+        tangent2 = rots[:, :, 1]  # (N*K, 3)
+        offset = samples_2d[:, 0:1] * tangent1 + samples_2d[:, 1:2] * tangent2
 
-        stds = self.get_scaling[selected_pts_mask].repeat(N,1)
-        # In 2D Gaussian Splatting, scaling is 2D, so we need to pad it to 3D for 3D rotation
-        # Use the mean of the 2D scaling values for the third dimension
-        std_3d = stds.mean(dim=1, keepdim=True) * 0.5  # Use half of the mean as a reasonable third dimension
-        stds_3d = torch.cat([stds, std_3d], dim=1)
-        means = torch.zeros((stds.size(0), 3), device="cuda")
-        samples = torch.normal(mean=means, std=stds_3d)
-        rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N,1,1)
-        new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
-        new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
-        new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
-        new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)
-        new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
-        new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
+        new_xyz = self.get_xyz[selected_pts_mask].repeat(N, 1) + offset
+        new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8 * N))
+        new_rotation = self._rotation[selected_pts_mask].repeat(N, 1)
+        new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
+        new_features_rest = self._features_rest[selected_pts_mask].repeat(N, 1, 1)
+        new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
         new_tmp_radii = self.tmp_radii[selected_pts_mask].repeat(N)
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_tmp_radii)
@@ -435,10 +432,26 @@ class GaussianModel:
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
 
-    def densify_and_clone_fastgs(self, metric_mask, filter):
-        selected_pts_mask = torch.logical_and(metric_mask, filter)
+    def densify_and_clone(self, selected_pts_mask):
+        """Clone small gaussians with in-plane offset along the dominant scaling axis.
+        Original and clone are displaced symmetrically so they tile the footprint
+        without overlapping, and both remain on the same 2D plane."""
+        scaling = self.get_scaling[selected_pts_mask]  # (K, 2)
+        rots = build_rotation(self._rotation[selected_pts_mask])  # (K, 3, 3)
+        tangent1 = rots[:, :, 0]  # (K, 3)
+        tangent2 = rots[:, :, 1]  # (K, 3)
 
-        new_xyz = self._xyz[selected_pts_mask]
+        s1 = scaling[:, 0:1]  # (K, 1)
+        s2 = scaling[:, 1:2]  # (K, 1)
+        use_t1 = (s1 >= s2).float()
+        direction = use_t1 * tangent1 + (1.0 - use_t1) * tangent2  # (K, 3)
+        dominant_s = torch.where(s1 >= s2, s1, s2)  # (K, 1)
+        offset = direction * dominant_s * 0.5
+
+        new_xyz = self._xyz[selected_pts_mask] + offset
+
+        self._xyz.data[selected_pts_mask] -= offset
+
         new_features_dc = self._features_dc[selected_pts_mask]
         new_features_rest = self._features_rest[selected_pts_mask]
         new_opacities = self._opacity[selected_pts_mask]
@@ -448,14 +461,8 @@ class GaussianModel:
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tmp_radii)
 
-    def densify_and_prune_fastgs(self, max_screen_size, min_opacity, extent, radii, args, importance_score = None, pruning_score = None):
-        ''' 
-            Densification and Pruning based on FastGS criteria:
-            1.  The gaussians candidate for densification are selected based on the gradient of their position first.
-            2.  Then, based on their average metric score (computed over multiple sampled views), they are either densified (cloned) or split.
-                This is our main contribution compared to the vanilla 3DGS.
-            3.  Finally, gaussians with low opacity or very large size are pruned.
-        '''
+    def densify_and_prune_fastgs(self, max_screen_size, min_opacity, extent, radii, args, importance_score, pruning_score):
+        '''Densification and Pruning based on FastGS criteria, with in-plane split/clone.'''
         grad_vars = self.xyz_gradient_accum / self.denom
         grad_vars[grad_vars.isnan()] = 0.0
         self.tmp_radii = radii
@@ -463,20 +470,26 @@ class GaussianModel:
         grads_abs = self.xyz_gradient_accum_abs / self.denom
         grads_abs[grads_abs.isnan()] = 0.0
 
-        grad_qualifiers = torch.where(torch.norm(grad_vars, dim=-1) >= args.grad_thresh, True, False)
-        grad_qualifiers_abs = torch.where(torch.norm(grads_abs, dim=-1) >= args.grad_abs_thresh, True, False)
-        clone_qualifiers = torch.max(self.get_scaling, dim=1).values <= args.dense*extent
-        split_qualifiers = torch.max(self.get_scaling, dim=1).values > args.dense*extent
+        grad_qualifiers = torch.norm(grad_vars, dim=-1) >= args.grad_thresh
+        grad_qualifiers_abs = torch.norm(grads_abs, dim=-1) >= args.grad_abs_thresh
+        max_s = torch.max(self.get_scaling, dim=1).values
+        clone_qualifiers = max_s <= args.dense * extent
+        split_qualifiers = max_s > args.dense * extent
 
-        all_clones = torch.logical_and(clone_qualifiers, grad_qualifiers)
-        all_splits = torch.logical_and(split_qualifiers, grad_qualifiers_abs)
-
-        # This is our multi-view consisent metric for densification
-        # We use this metric to further filter the candidates for densification, which is similar to taming 3dgs.
         metric_mask = importance_score > 5
 
-        self.densify_and_clone_fastgs(metric_mask, all_clones)
-        self.densify_and_split_fastgs(metric_mask, all_splits)
+        clone_mask = torch.logical_and(torch.logical_and(clone_qualifiers, grad_qualifiers), metric_mask)
+        split_candidates = torch.logical_and(split_qualifiers, grad_qualifiers_abs)
+        n_init = self.get_xyz.shape[0]
+        split_mask_full = torch.zeros(n_init, dtype=bool, device="cuda")
+        combined = torch.logical_and(metric_mask, split_candidates)
+        split_mask_full[:combined.shape[0]] = combined
+
+        n_before = self.get_xyz.shape[0]
+        self.densify_and_clone(clone_mask)
+        n_added = self.get_xyz.shape[0] - n_before
+        split_mask_full = torch.cat([split_mask_full, torch.zeros(n_added, device="cuda", dtype=bool)])
+        self.densify_and_split(split_mask_full)
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
@@ -484,14 +497,13 @@ class GaussianModel:
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
 
-        scores = 1 - pruning_score 
+        scores = 1 - pruning_score
         to_remove = torch.sum(prune_mask)
         remove_budget = int(0.5 * to_remove)
 
-        # The budget is not necessary for our method.
         if remove_budget:
-            n_init_points = self.get_xyz.shape[0]
-            padded_importance = torch.zeros((n_init_points), dtype=torch.float32)
+            n_pts = self.get_xyz.shape[0]
+            padded_importance = torch.zeros(n_pts, dtype=torch.float32)
             padded_importance[:scores.shape[0]] = 1 / (1e-6 + scores.squeeze())
             selected_pts_mask = torch.zeros_like(padded_importance, dtype=bool, device="cuda")
             sampled_indices = torch.multinomial(padded_importance, remove_budget, replacement=False)
@@ -499,10 +511,46 @@ class GaussianModel:
             final_prune = torch.logical_and(prune_mask, selected_pts_mask)
             self.prune_points(final_prune)
 
-        opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.8))
+        opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.8))
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
-        tmp_radii = self.tmp_radii
+        self.tmp_radii = None
+
+        torch.cuda.empty_cache()
+        return
+
+    def densify_and_prune_2dgs(self, max_screen_size, min_opacity, extent, radii, grad_thresh):
+        """Frequent densification for dense 2DGS. Split if max scaling > mean, else clone.
+        Both operations keep new gaussians on the original 2D plane."""
+        grad_vars = self.xyz_gradient_accum / self.denom
+        grad_vars[grad_vars.isnan()] = 0.0
+        self.tmp_radii = radii
+
+        grad_mask = torch.norm(grad_vars, dim=-1) >= grad_thresh
+
+        scaling = self.get_scaling  # (N, 2)
+        max_scaling = torch.max(scaling, dim=1).values
+        mean_scaling = scaling.mean()
+
+        split_mask = torch.logical_and(grad_mask, max_scaling > mean_scaling)
+        clone_mask = torch.logical_and(grad_mask, max_scaling <= mean_scaling)
+
+        n_before = self.get_xyz.shape[0]
+        self.densify_and_clone(clone_mask)
+        n_added = self.get_xyz.shape[0] - n_before
+        split_mask = torch.cat([split_mask, torch.zeros(n_added, device="cuda", dtype=bool)])
+        self.densify_and_split(split_mask)
+
+        prune_mask = (self.get_opacity < min_opacity).squeeze()
+        if max_screen_size:
+            big_points_vs = self.max_radii2D > max_screen_size
+            big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
+            prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
+        self.prune_points(prune_mask)
+
+        opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.8))
+        optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
+        self._opacity = optimizable_tensors["opacity"]
         self.tmp_radii = None
 
         torch.cuda.empty_cache()
@@ -512,7 +560,7 @@ class GaussianModel:
         self.xyz_gradient_accum_abs[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter, 2:], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
 
-    def final_prune_fastgs(self, min_opacity, pruning_score = None):
+    def final_prune_fastgs(self, min_opacity, pruning_score):
         """Final-stage pruning: remove Gaussians based on opacity and multi-view consistency.
         In the final stage we remove Gaussians that have low opacity or that are flagged by
         our multi-view reconstruction consistency metric (provided as `pruning_score`)."""

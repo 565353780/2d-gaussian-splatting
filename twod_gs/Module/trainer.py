@@ -85,7 +85,7 @@ class Trainer(BaseGSTrainer):
         lambda_normal: float = 0.01,
         lambda_dist: float = 0.01,
         lambda_opacity: float = 0.01,
-        lambda_scaling: float = 0.01,
+        lambda_scaling: float = 1.0,
     ) -> Tuple[dict, dict]:
         self.gaussians.update_learning_rate(iteration)
 
