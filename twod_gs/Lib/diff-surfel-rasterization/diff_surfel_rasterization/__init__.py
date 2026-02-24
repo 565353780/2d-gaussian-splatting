@@ -57,114 +57,48 @@ class _RasterizeGaussians(torch.autograd.Function):
     ):
 
         # Restructure arguments the way that the C++ lib expects them
-        get_flag = raster_settings.get_flag if hasattr(raster_settings, 'get_flag') else False
-        metric_map = raster_settings.metric_map if hasattr(raster_settings, 'metric_map') and raster_settings.metric_map is not None else None
-        
-        # Determine which C++ function to call based on get_flag and metric_map
-        # Only use metric_map version if get_flag is True AND metric_map is a valid tensor
-        use_metric = False
-        if get_flag and metric_map is not None:
-            try:
-                # Check if metric_map is a valid tensor with elements
-                if isinstance(metric_map, torch.Tensor) and metric_map.numel() > 0:
-                    use_metric = True
-            except:
-                use_metric = False
-        
-        # Build arguments based on whether we use metric_map
-        if use_metric:
-            args = (
-                raster_settings.bg, 
-                means3D,
-                colors_precomp,
-                opacities,
-                scales,
-                rotations,
-                raster_settings.scale_modifier,
-                cov3Ds_precomp,
-                metric_map,
-                raster_settings.viewmatrix,
-                raster_settings.projmatrix,
-                raster_settings.tanfovx,
-                raster_settings.tanfovy,
-                raster_settings.image_height,
-                raster_settings.image_width,
-                sh,
-                raster_settings.sh_degree,
-                raster_settings.campos,
-                raster_settings.prefiltered,
-                raster_settings.debug,
-                get_flag
-            )
-        else:
-            args = (
-                raster_settings.bg, 
-                means3D,
-                colors_precomp,
-                opacities,
-                scales,
-                rotations,
-                raster_settings.scale_modifier,
-                cov3Ds_precomp,
-                raster_settings.viewmatrix,
-                raster_settings.projmatrix,
-                raster_settings.tanfovx,
-                raster_settings.tanfovy,
-                raster_settings.image_height,
-                raster_settings.image_width,
-                sh,
-                raster_settings.sh_degree,
-                raster_settings.campos,
-                raster_settings.prefiltered,
-                raster_settings.debug
-            )
-        
+        args = (
+            raster_settings.bg, 
+            means3D,
+            colors_precomp,
+            opacities,
+            scales,
+            rotations,
+            raster_settings.scale_modifier,
+            cov3Ds_precomp,
+            raster_settings.viewmatrix,
+            raster_settings.projmatrix,
+            raster_settings.tanfovx,
+            raster_settings.tanfovy,
+            raster_settings.image_height,
+            raster_settings.image_width,
+            sh,
+            raster_settings.sh_degree,
+            raster_settings.campos,
+            raster_settings.prefiltered,
+            raster_settings.debug
+        )
+
         # Invoke C++/CUDA rasterizer
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
             try:
-                result = _C.rasterize_gaussians(*args)
-                
-                # 10 = with metric (accum_metric_counts, winner_id, hit_counts), 9 = no metric (winner_id, hit_counts)
-                if len(result) == 10:
-                    num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, accum_metric_counts, winner_id, hit_counts = result
-                elif len(result) == 9:
-                    num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, winner_id, hit_counts = result
-                    accum_metric_counts = None
-                else:
-                    num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer = result
-                    accum_metric_counts = None
-                    winner_id = None
-                    hit_counts = None
+                num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer = _C.rasterize_gaussians(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_fw.dump")
                 print("\nAn error occured in forward. Please forward snapshot_fw.dump for debugging.")
                 raise ex
         else:
-            result = _C.rasterize_gaussians(*args)
-            
-            if len(result) == 10:
-                num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, accum_metric_counts, winner_id, hit_counts = result
-            elif len(result) == 9:
-                num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, winner_id, hit_counts = result
-                accum_metric_counts = None
-            else:
-                num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer = result
-                accum_metric_counts = None
-                winner_id = None
-                hit_counts = None
+            num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer = _C.rasterize_gaussians(*args)
 
         # Keep relevant tensors for backward
         ctx.raster_settings = raster_settings
         ctx.num_rendered = num_rendered
         ctx.save_for_backward(colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer)
-        if accum_metric_counts is not None:
-            return color, radii, depth, accum_metric_counts, winner_id, hit_counts
-        else:
-            return color, radii, depth, None, winner_id, hit_counts
+        return color, radii, depth
 
     @staticmethod
-    def backward(ctx, grad_out_color, grad_radii, grad_depth, grad_accum_metric_counts, grad_winner_id, grad_hit_counts):
+    def backward(ctx, grad_out_color, grad_radii, grad_depth):
 
         # Restore necessary values from context
         num_rendered = ctx.num_rendered
@@ -234,8 +168,6 @@ class GaussianRasterizationSettings(NamedTuple):
     campos : torch.Tensor
     prefiltered : bool
     debug : bool
-    get_flag : bool = False
-    metric_map : torch.Tensor = None
 
 class GaussianRasterizer(nn.Module):
     def __init__(self, raster_settings):
@@ -277,7 +209,7 @@ class GaussianRasterizer(nn.Module):
         
 
         # Invoke C++/CUDA rasterization routine
-        result = rasterize_gaussians(
+        return rasterize_gaussians(
             means3D,
             means2D,
             shs,
@@ -288,10 +220,4 @@ class GaussianRasterizer(nn.Module):
             cov3D_precomp,
             raster_settings, 
         )
-        
-        # Handle return value: (color, radii, depth, accum_metric_counts, winner_id, hit_counts) - always 6 elements
-        if len(result) == 6:
-            return result
-        else:
-            return result
 
