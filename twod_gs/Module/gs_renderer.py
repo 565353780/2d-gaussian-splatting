@@ -56,11 +56,8 @@ class GSRenderer(object):
                 gs_camera = GSCamera(camera, device)
                 render_dict = render(gs_camera, gaussians, pipe, background)
                 # 立即转移到 CPU 以释放显存，且不参与梯度计算
-                render_dict_cpu = {}
                 for k, v in render_dict.items():
                     if isinstance(v, torch.Tensor):
-                        render_dict_cpu[k] = v.detach().cpu()
-                    else:
-                        render_dict_cpu[k] = v
-                render_list.append(render_dict_cpu)
+                        render_dict[k] = v.cpu()
+                render_list.append(render_dict)
         return render_list
