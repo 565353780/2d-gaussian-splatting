@@ -7,7 +7,7 @@ import open3d as o3d
 
 from argparse import ArgumentParser
 
-from utils.mesh_utils import GaussianExtractor, post_process_mesh
+from twod_gs.Method.mesh_utils import GaussianExtractor, post_process_mesh
 
 from base_gs_trainer.Dataset.gs_cameras import GSCameras
 

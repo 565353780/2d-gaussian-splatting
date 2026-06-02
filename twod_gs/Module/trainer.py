@@ -9,7 +9,7 @@ from copy import deepcopy
 
 from fused_ssim import fused_ssim
 
-from utils.mesh_utils import GaussianExtractor, post_process_mesh
+from twod_gs.Method.mesh_utils import GaussianExtractor, post_process_mesh
 
 from base_gs_trainer.Loss.l1 import l1_loss
 from base_gs_trainer.Module.base_gs_trainer import BaseGSTrainer

@@ -10,8 +10,8 @@ from simple_knn._C import distCUDA2
 from base_gs_trainer.Method.sh_utils import RGB2SH
 from base_gs_trainer.Data.basic_point_cloud import BasicPointCloud
 
-from utils.general_utils import build_scaling_rotation
-from utils.general_utils import (
+from twod_gs.Method.general_utils import (
+    build_scaling_rotation,
     inverse_sigmoid,
     get_expon_lr_func,
     build_rotation,
