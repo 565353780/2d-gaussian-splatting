@@ -1,5 +1,4 @@
 import os
-import sys
 import torch
 import open3d as o3d
 
@@ -7,7 +6,6 @@ from torch import nn
 from tqdm import tqdm
 from typing import Tuple
 from copy import deepcopy
-from argparse import ArgumentParser
 
 from fused_ssim import fused_ssim
 
@@ -31,21 +29,14 @@ class Trainer(BaseGSTrainer):
         test_freq: int=10000,
         save_freq: int=10000,
     ) -> None:
-        # Set up command line argument parser
-        parser = ArgumentParser(description="Training script parameters")
-        lp = ModelParams(parser)
-        op = OptimizationParams(parser)
-        pp = PipelineParams(parser)
-        args = parser.parse_args(sys.argv[1:])
+        self.dataset = ModelParams.default()
+        self.opt = OptimizationParams.default()
+        self.pipe = PipelineParams.default()
 
-        args.source_path = colmap_data_folder_path
-        args.model_path = save_result_folder_path
+        self.dataset.source_path = os.path.abspath(colmap_data_folder_path)
+        self.dataset.model_path = save_result_folder_path
 
-        print("Optimizing " + args.model_path)
-
-        self.dataset = lp.extract(args)
-        self.opt = op.extract(args)
-        self.pipe = pp.extract(args)
+        print("Optimizing " + self.dataset.model_path)
 
         self.gaussians = GaussianModel(self.dataset.sh_degree)
 

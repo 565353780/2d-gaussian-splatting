@@ -1,4 +1,7 @@
+import os
+
 from base_gs_trainer.Config.config import (
+    GroupParams,
     ParamGroup,
     BaseModelParams,
     BasePipelineParams,
@@ -6,26 +9,50 @@ from base_gs_trainer.Config.config import (
 )
 
 
+def _params_to_group(params_obj) -> GroupParams:
+    # 将参数对象上的属性拷贝到 GroupParams，保持与 ParamGroup.extract(args) 一致的去下划线规则
+    group = GroupParams()
+    for key, value in vars(params_obj).items():
+        if key.startswith("_"):
+            key = key[1:]
+        setattr(group, key, value)
+    return group
+
+
 class ModelParams(BaseModelParams, ParamGroup):
-    def __init__(self, parser, sentinel=False):
+    def __init__(self, parser=None, sentinel=False):
         BaseModelParams.__init__(self)
 
         self.render_items = ['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature']
 
-        ParamGroup.__init__(self, parser, "Loading Parameters", sentinel)
+        if parser is not None:
+            ParamGroup.__init__(self, parser, "Loading Parameters", sentinel)
         return
 
+    @classmethod
+    def default(cls) -> GroupParams:
+        instance = cls()
+        group = _params_to_group(instance)
+        group.source_path = os.path.abspath(group.source_path)
+        return group
+
 class PipelineParams(BasePipelineParams, ParamGroup):
-    def __init__(self, parser):
+    def __init__(self, parser=None):
         BasePipelineParams.__init__(self)
 
         self.depth_ratio = 0.0
 
-        ParamGroup.__init__(self, parser, "Pipeline Parameters")
+        if parser is not None:
+            ParamGroup.__init__(self, parser, "Pipeline Parameters")
         return
 
+    @classmethod
+    def default(cls) -> GroupParams:
+        instance = cls()
+        return _params_to_group(instance)
+
 class OptimizationParams(BaseOptimizationParams, ParamGroup):
-    def __init__(self, parser):
+    def __init__(self, parser=None):
         BaseOptimizationParams.__init__(self)
         self.opacity_lr = 0.05
         self.percent_dense = 0.01
@@ -56,5 +83,11 @@ class OptimizationParams(BaseOptimizationParams, ParamGroup):
         self.lambda_exclusive = 0.005
         self.lambda_winner_opacity = 0.05
 
-        ParamGroup.__init__(self, parser, "Optimization Parameters")
+        if parser is not None:
+            ParamGroup.__init__(self, parser, "Optimization Parameters")
         return
+
+    @classmethod
+    def default(cls) -> GroupParams:
+        instance = cls()
+        return _params_to_group(instance)
