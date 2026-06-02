@@ -229,6 +229,9 @@ class Trainer(BaseGSTrainer):
 
     def train(self, iteration_num: int = 12000):
         # 1.2w 后 normal loss 开始震荡，硬上限到 final_train_iter；更小的步数用于快速实验
+        # 记录外部请求的步数，最终结果统一以该步数命名保存，
+        # 与 fast_gs 的 ``point_cloud/iteration_{steps}`` 保存/读取方式对齐
+        requested_iteration_num = iteration_num
         iteration_num = min(iteration_num, self.final_train_iter)
 
         epoch_len = max(1, len(self.scene))
@@ -301,6 +304,12 @@ class Trainer(BaseGSTrainer):
                         iteration, last_prune_num, len(self.gaussians.get_xyz)))
 
             self.iteration = iteration
+
+        # 训练结束后统一以外部请求的步数命名保存最终结果，
+        # 保证 ``point_cloud/iteration_{steps}/point_cloud.ply`` 始终存在
+        print("\n[ITER {}] Saving Gaussians".format(requested_iteration_num))
+        self.saveScene(requested_iteration_num)
+        self.iteration = requested_iteration_num
         return True
 
     def exportMesh(
