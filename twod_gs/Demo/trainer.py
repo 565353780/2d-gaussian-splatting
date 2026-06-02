@@ -25,6 +25,6 @@ def demo():
         test_freq=500,
         save_freq=500,
     )
-    trainer.train(30000)
+    trainer.train(12000)
     # trainer.exportMesh()
     return True
