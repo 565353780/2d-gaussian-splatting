@@ -4,7 +4,7 @@ sys.path.append('../base-gs-trainer')
 sys.path.append('../camera-control')
 
 import os
-os.environ['CUDA_VISIBLE_DEVICES']='3'
+os.environ['CUDA_VISIBLE_DEVICES']='2'
 
 from base_gs_trainer.Method.time import getCurrentTime
 
@@ -12,11 +12,10 @@ from twod_gs.Module.trainer import Trainer
 
 
 def demo():
-    data_id = 'haizei_1_v4'
+    data_folder_path = '/home/lichanghao/chLi/MMVideoReconV1/JJ/20260427_164113_431091/'
 
-    home = os.environ['HOME']
-    colmap_data_folder_path = home + '/chLi/Dataset/GS/' + data_id + '/colmap_normalized/'
-    save_result_folder_path = home + '/chLi/Dataset/GS/' + data_id + '/2dgs/'
+    colmap_data_folder_path = data_folder_path + '05_colmap_ba/'
+    save_result_folder_path = data_folder_path + '06_2dgs/'
 
     trainer = Trainer(
         colmap_data_folder_path=colmap_data_folder_path,
