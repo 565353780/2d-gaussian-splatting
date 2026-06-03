@@ -56,6 +56,9 @@ class GaussianModel:
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
+        # epoch 级屏幕空间可见性统计（per-point），随 densify/prune 同步增删索引；
+        # 长度为 0 表示尚未启用，启用后长度恒等于当前 GS 数量。
+        self.epoch_has_image_grad = torch.empty(0, dtype=torch.bool)
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
@@ -317,6 +320,10 @@ class GaussianModel:
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
 
+        # epoch 可见性统计是 per-point 跟随张量，删点时同步过滤以保持索引对齐
+        if self.epoch_visibility_enabled:
+            self.epoch_has_image_grad = self.epoch_has_image_grad[valid_points_mask]
+
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
@@ -358,6 +365,17 @@ class GaussianModel:
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+
+        # 新增的 GS 拼接在尾部；其本轮可见性初始化为 False（尚未被观察到收到梯度），
+        # 与已有点的统计保持索引对齐
+        if self.epoch_visibility_enabled:
+            num_new = new_xyz.shape[0]
+            new_visibility = torch.zeros(
+                num_new, dtype=torch.bool, device=self.epoch_has_image_grad.device
+            )
+            self.epoch_has_image_grad = torch.cat(
+                (self.epoch_has_image_grad, new_visibility), dim=0
+            )
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         n_init_points = self.get_xyz.shape[0]
@@ -419,3 +437,19 @@ class GaussianModel:
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
+
+    @property
+    def epoch_visibility_enabled(self) -> bool:
+        return self.epoch_has_image_grad.numel() > 0
+
+    def reset_epoch_visibility(self):
+        # 按当前 GS 数量重置为全 False（本轮尚未观察到任何点收到屏幕空间梯度）
+        self.epoch_has_image_grad = torch.zeros(
+            self.get_xyz.shape[0], dtype=torch.bool, device=self.get_xyz.device
+        )
+
+    def accumulate_epoch_visibility(self, received_grad):
+        # received_grad 必须与当前 GS 数量对齐；启用前先 reset
+        if not self.epoch_visibility_enabled:
+            self.reset_epoch_visibility()
+        self.epoch_has_image_grad |= received_grad

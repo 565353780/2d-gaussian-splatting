@@ -15,7 +15,7 @@ def demo():
     data_folder_path = '/home/lichanghao/chLi/MMVideoReconV1/JJ/20260427_164113_431091/'
 
     colmap_data_folder_path = data_folder_path + '05_colmap_ba/'
-    save_result_folder_path = data_folder_path + '06_2dgs/'
+    save_result_folder_path = data_folder_path + '06_2dgs_test/'
 
     trainer = Trainer(
         colmap_data_folder_path=colmap_data_folder_path,
@@ -25,6 +25,6 @@ def demo():
         test_freq=500,
         save_freq=500,
     )
-    trainer.train(12000)
+    trainer.train(6000)
     # trainer.exportMesh()
     return True
